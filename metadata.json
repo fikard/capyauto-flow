@@ -1,0 +1,6 @@
+{
+  "name": "CapyAuto Flow - 手机端全自动流水线工程中控台",
+  "description": "面向单台安卓设备的AutoX.js工程化全自动流水线中控系统，提供FSM状态机实机仿真、离线OCR视觉决策、多账号隔离调度矩阵与风控鲁棒性配置。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
