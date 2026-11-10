@@ -49,6 +49,7 @@
         if (typeof event.data === "string") {
           const msg = JSON.parse(event.data);
           if (msg.type === "meta") log(`meta ${msg.width}x${msg.height} fps=${msg.fps} degraded=${msg.degraded}`);
+          else if (msg.type === "pong") log("pong");
           else log(`error ${msg.code} ${msg.message ?? ""}`);
           return;
         }
@@ -57,7 +58,10 @@
         img.src = url;
         fitStage();
       };
-      ws.onclose = () => log("ws closed");
+      ws.onclose = () => {
+        log("ws closed");
+        ws = null;
+      };
       log(`connecting ${sidEl.value}`);
     }
 

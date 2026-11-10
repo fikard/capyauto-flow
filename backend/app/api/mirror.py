@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 
@@ -47,19 +48,27 @@ async def mirror(ws: WebSocket, sessionId: str = Query(...)) -> None:
         )
 
     async def pump_client() -> None:
-        try:
-            while True:
+        while True:
+            try:
                 message = await ws.receive_text()
-                if json.loads(message).get("type") == "ping":
+            except (WebSocketDisconnect, RuntimeError):
+                return
+            try:
+                payload = json.loads(message)
+            except ValueError:
+                continue
+            if isinstance(payload, dict) and payload.get("type") == "ping":
+                try:
                     await ws.send_text(json.dumps({"type": "pong", "ts": time.time()}))
-        except WebSocketDisconnect:
-            return
+                except (WebSocketDisconnect, RuntimeError):
+                    return
 
     await send_meta(0)
     pump = asyncio.create_task(pump_client())
+    stream = adapter.frames(sessionId)
     sent = 0
     try:
-        async for frame in adapter.frames(sessionId):
+        async for frame in stream:
             await ws.send_bytes(frame.jpeg)
             sent += 1
             if sent % META_EVERY == 0:
@@ -72,7 +81,13 @@ async def mirror(ws: WebSocket, sessionId: str = Query(...)) -> None:
         pass
     finally:
         pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await pump
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
         try:
             await ws.close()
-        except RuntimeError:
+        except (RuntimeError, WebSocketDisconnect):
             pass
