@@ -8,10 +8,16 @@ from PIL import Image, ImageDraw
 
 from app.core.dither import bezier_points, gaussian_click
 from app.core.geometry import normalize_to_device
-from app.device.base import DeviceAdapter, DeviceInfo, Frame, MirrorSession, SwipeResult, TapResult
+from app.device.base import (
+    DeviceAdapter,
+    DeviceInfo,
+    Frame,
+    MirrorSession,
+    SwipeResult,
+    TapResult,
+    keycode_for,
+)
 from app.errors import DeviceNotFound, SessionNotFound
-
-KEY_ALIASES = {"back", "home", "app_switch", "power", "volume_up", "volume_down"}
 
 
 class MockDevice(DeviceAdapter):
@@ -134,8 +140,7 @@ class MockDevice(DeviceAdapter):
 
     async def key(self, session_id: str, key: str) -> None:
         self.get_session(session_id)
-        if key not in KEY_ALIASES:
-            raise ValueError(f"未知按键: {key}")
+        keycode_for(key)
         self._keys.append(key)
 
     async def screenshot(self, session_id: str) -> bytes:

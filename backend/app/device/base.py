@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator, Literal
 
+from app.errors import UnknownKey
+
 
 @dataclass
 class DeviceInfo:
@@ -113,3 +115,20 @@ class DeviceAdapter(ABC):
     @abstractmethod
     async def screenshot(self, session_id: str) -> bytes:
         ...
+
+
+KEYCODES: dict[str, int] = {
+    "back": 4,
+    "home": 3,
+    "app_switch": 187,
+    "power": 26,
+    "volume_up": 24,
+    "volume_down": 25,
+}
+
+
+def keycode_for(name: str) -> int:
+    try:
+        return KEYCODES[name]
+    except KeyError:
+        raise UnknownKey(f"未知按键: {name}，可选 {sorted(KEYCODES)}") from None
