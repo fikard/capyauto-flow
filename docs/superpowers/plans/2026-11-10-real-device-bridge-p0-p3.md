@@ -2616,6 +2616,15 @@ git commit -m "feat: scrcpy 线格式编解码与按键映射"
 
 ### 任务 13：ScrcpySession 视频通道与重连
 
+> **实测修订（审查后落地版本，以此为准；下方代码块仅保留初版草案）**
+>
+> 1. 常数：新增 `VIDEO_READ_TIMEOUT = 20.0`（静态画面约 10s 才出关键帧，读超时必须大于它并留余量）、`META_READ_TIMEOUT = 5.0`、`CONTROL_READ_TIMEOUT = 5.0`。`_connect(deadline_s, read_timeout)` 握手期用 5s，读到 meta 后 video 提升为 20s。
+> 2. 重连计数：`_store` 自增 `_decoded_count`；`_decode_loop` 每轮记录 `decoded_before`，若本轮解出过帧则 `attempt = 0` 再计数，实现真正的「连续 3 次」；放弃分支 `log.exception` + `_close_transport()` + return；`finally` 置 `_stream_alive = False`。
+> 3. 只读状态：新增 `stream_alive` 属性（`start()` 成功后 True，线程退出/放弃/stop 后 False），供任务 15 判定 `degraded`；健康判定应为 `stream_alive and control_available`。
+> 4. 建连自清理：`_open_transport` 入口检查 `_stop`，主体包 `try/except BaseException: self._close_transport(); raise`，保证 forward 已建、server 已 spawn 后任何失败（含 stop 介入、10s 超时）都回收 server/forward/socket；`_connect` 与重试循环都随 `_stop` 退出。
+> 5. 注入互斥：新增独立 `_inject_lock`（与帧锁 `_lock` 分离，无嵌套，不会阻塞解码）；`tap/swipe/key` 整段持锁；`swipe` 用 `release flag + finally` 保证中途失败补发 `ACTION_UP`；`_send` 写失败时关闭并置空 `_control`；所有 `assert` 改为显式 `ScrcpyUnavailable`/`InjectionFailed`。
+> 6. 测试：`tests/test_scrcpy_session.py` 最终 21 个用例（socketpair 注入字节/顺序/并发串行化/失败补 UP、PyAV 本地 H.264 按线格式解出 JPEG、重连放弃与归零、stop 中断、建连失败清理），全量 87 passed。
+
 **文件：**
 - 修改：`backend/app/device/scrcpy_session.py`（追加会话类）
 - 创建：`backend/tests/test_scrcpy_session.py`
@@ -2922,7 +2931,7 @@ class ScrcpySession:
 
 运行：`.venv/bin/python -m pytest tests/test_scrcpy_session.py -q`
 
-预期：`4 passed`（`recv_exact` 与 meta 长度校验用例）。
+预期：`21 passed`（初版只有 4 个复用任务 12 的用例；审查要求补足注入序列、PyAV 线格式首帧、重连归零/放弃、stop 中断与建连失败清理，见节首「实测修订」）。全量应为 `87 passed`。
 
 - [ ] **步骤 5：Commit**
 
@@ -2930,6 +2939,11 @@ class ScrcpySession:
 git add backend/app/device/scrcpy_session.py backend/tests/test_scrcpy_session.py
 git commit -m "feat: ScrcpySession 视频解码线程、control 注入与重连"
 ```
+
+实际落地为三个提交（审查修复同轮）：
+`f78a79b feat: ScrcpySession 视频解码线程、control 注入与重连`、
+`84a75b3 fix: 修复 ScrcpySession 重连计数、读超时与注入竞态`、
+`ae71ce7 fix: ScrcpySession 建连失败自清理 server 与 forward`。
 
 ---
 ### 任务 14：screencap 降级通道
