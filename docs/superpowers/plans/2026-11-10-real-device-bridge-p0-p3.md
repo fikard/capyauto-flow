@@ -3110,10 +3110,15 @@ git commit -m "feat: screencap 轮询降级通道"
 >
 > 1. session id：计划的 `f"s{len(self._sessions) + 1}"` 在关闭会话后会与现存 id 碰撞（覆盖会话并泄漏 scrcpy server 与固定端口），已改为 `_new_session_id()` + `threading.Lock` 单调递增、永不回收；`get_session` 改用 `.get()` + 判空以避免并发 close 的 `KeyError`。
 > 2. `frames()` 失联判定：scrcpy 分支仅在 `not transport.stream_alive` 时抛 `MirrorLost`；流存活期间**不得**因「超过 `frame_timeout` 无新帧」抛错（静态画面约 10s 才出关键帧，否则 10 分钟镜像会被误杀）；重连期间 `stream_alive` 保持 True，WS 不中断。screencap 分支保留 deadline 超时。每轮检查会话是否已关闭，close 后生成器直接结束。
+> 2b. 重连预算：合并前审查指出「连续 3 次失败≈3.5s」无法覆盖「拔线 5 秒插回」。改为时间预算 `RECONNECT_BUDGET_S = 30.0`、退避 0.5/1/2/3s 封顶；预算内即使连续失败超过 3 次也继续重连，预算耗尽才 `_close_transport()` 放弃。退避使用 `_stop.wait(backoff)`，`stop()` 可立即唤醒（DELETE 不被最长 3s 退避拖住）。
+> 2c. 会话级端口：不再所有会话共用 `scrcpy_tcp_port`（第二个会话会覆盖第一个的 `adb forward`）；配置端口优先，占用/bind 失败时由本机 bind(0) 取空闲端口，close 释放。
+> 2d. close 幂等：`forward_remove` 改为吞 `ApiError`（含 `AdbNotFound`）；`_close_sync` 先清三张会话表，stop 失败只告警，DELETE 不再 503。
+> 2e. 尺寸变化：`frames()` 发现 `transport.meta` 与固化会话尺寸不一致时抛 `MirrorLost("视频尺寸已变化，请重建会话")`，避免旋转后坐标系统性偏移。
 > 3. 降级通道帧率固定 1 fps：`fallback_fps = min(fps, 1)`，同时传给 `ScreencapPoller` 与 `MirrorSession.fps`；scrcpy 通道仍用请求 fps。
 > 4. 坐标换算只用 `MirrorSession.width/height`；`ScreencapPoller.width/height` 是原始分辨率、`Frame.width/height` 是缩放后尺寸，二者均不得用于换算。
-> 5. 测试：`tests/test_adb_device.py` 最终 11 个用例（id 单调/并发唯一、fallback 两分支、async generator 形态、`stream_alive=False` 即抛、静态不误杀、screencap 超时、control 不可用走 input 兜底），全量 99 passed。
-> 6. **P2 真机实测（ALP-AN00, 1200x2648）**：`mode=scrcpy`、`degraded=false`、`sizeMismatch=true`（wm 1200x2652）；连续运动 12s 得 49 帧（4.08 fps）；静止画面 40s 得 32 帧且无 `MIRROR_LOST`；`adb shell pkill -f com.genymobile.scrcpy.Server` 后 1.5s 恢复出帧、25s 内 101 帧、0 错误；10 分钟持续运动 soak 见第 4 节记录。
+> 5. 测试：`tests/test_adb_device.py` 最终 11 个用例（id 单调/并发唯一、fallback 两分支、async generator 形态、`stream_alive=False` 即抛、静态不误杀、screencap 超时、control 不可用走 input 兜底）；重连预算、会话级端口、close 幂等与尺寸变化的用例见 2b–2e。全量 **114 passed**。
+> 6. **P2 真机实测（ALP-AN00, 1200x2648）**：`mode=scrcpy`、`degraded=false`、`sizeMismatch=true`（wm 1200x2652）；连续运动 12s 得 49 帧（4.08 fps）；静止画面 40s 得 32 帧且无 `MIRROR_LOST`；`adb shell pkill -f com.genymobile.scrcpy.Server` 后 1.5s 恢复出帧、25s 内 101 帧、0 错误；10 分钟持续运动 soak：**2483 帧、4.14 fps、最大帧间隔 0.47s、0 错误**。
+> 7. 「拔线 5 秒」的真实拔插复测未完成：尝试用 `adb kill-server` 模拟设备消失后，本机 adb daemon 因 macOS USB 接口占用（`e00002be`）无法重启，需物理拔插数据线后重测。重连预算逻辑已由单测覆盖（预算内连续失败 5 次仍恢复；预算耗尽才放弃）。
 
 **文件：**
 - 创建：`backend/app/device/adb_device.py`
