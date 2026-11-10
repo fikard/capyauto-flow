@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import config
-from app.api import devices, health, mirror
+from app.api import control, devices, health, mirror
 from app.errors import ApiError
 
 app = FastAPI(title="CapyAuto Flow Device Bridge", version="0.1.0")
@@ -33,6 +33,7 @@ async def handle_api_error(_request: Request, exc: ApiError) -> JSONResponse:
 app.include_router(health.router)
 app.include_router(devices.router)
 app.include_router(mirror.router)
+app.include_router(control.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
