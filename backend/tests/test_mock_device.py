@@ -38,3 +38,17 @@ def test_mock_tap_and_key():
         await device.key(session.id, "back")
 
     asyncio.run(scenario())
+
+
+def test_mock_session_id_never_reused():
+    async def scenario():
+        device = MockDevice()
+        first = await device.create_session("MOCK-0001", fps=5)
+        second = await device.create_session("MOCK-0001", fps=15)
+        assert (first.id, second.id) == ("mock-1", "mock-2")
+        await device.close_session(first.id)
+        third = await device.create_session("MOCK-0001", fps=10)
+        assert third.id == "mock-3"
+        assert device.get_session(second.id).fps == 15
+
+    asyncio.run(scenario())
