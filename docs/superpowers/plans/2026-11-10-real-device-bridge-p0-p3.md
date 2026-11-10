@@ -2678,6 +2678,7 @@ def test_packet_header_size_guard():
 ```python
 import io
 import logging
+import random
 import subprocess
 import threading
 import time
@@ -2715,6 +2716,7 @@ class ScrcpySession:
         self._adb = adb
         self._server_jar = server_jar
         self._server_version = server_version
+        self._scid = ""
         self._tcp_port = tcp_port
         self._fps = max(1, fps)
         self._bitrate = bitrate
@@ -2742,21 +2744,39 @@ class ScrcpySession:
 
     def _open_transport(self) -> None:
         remote = "/data/local/tmp/scrcpy-server.jar"
-        self._adb.forward(self.serial, self._tcp_port, "localabstract:scrcpy")
+        # scrcpy 3.x 的抽象 socket 名带 scid，且 scid 按 16 进制 int32 解析
+        self._scid = f"{random.randrange(1, 0x7FFF_FFFF):08x}"
+        self._adb.forward(self.serial, self._tcp_port, f"localabstract:scrcpy_{self._scid}")
         self._adb.push(self.serial, self._server_jar, remote)
         command = (
             f"CLASSPATH={remote} app_process / com.genymobile.scrcpy.Server {self._server_version} "
             f"log_level=info tunnel_forward=true audio=false video=true control=true "
+            f"scid={self._scid} send_dummy_byte=false "
             f"max_fps={self._fps} video_bit_rate={self._bitrate} max_size=0 cleanup=true"
         )
         self._server = self._adb.popen_shell(self.serial, command)
-        self._video = self._connect()
-        self.meta = parse_device_meta(recv_exact(self._video, META_LEN))
-        try:
-            self._control = self._connect()
-        except OSError as exc:
-            self._control = None
-            log.warning("control socket 不可用，注入将降级为 adb shell input: %s", exc)
+        # server 必须等 video 与 control 两个 socket 都 accept 后才发 76 字节元数据；
+        # adb forward 先于 server 监听时会立刻 EOF，所以整体重试。
+        deadline = time.time() + 10.0
+        last: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self._video = self._connect(deadline_s=1.0)
+                self._control = self._connect(deadline_s=1.0)
+                self.meta = parse_device_meta(recv_exact(self._video, META_LEN))
+                return
+            except (OSError, ConnectionError, ScrcpyUnavailable) as exc:
+                last = exc
+                for sock in (self._control, self._video):
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                self._control = None
+                self._video = None
+                time.sleep(0.2)
+        raise ScrcpyUnavailable(f"scrcpy 会话建立失败: {last}")
 
     def _connect(self, deadline_s: float = 8.0) -> socket.socket:
         end = time.time() + deadline_s
@@ -3790,19 +3810,25 @@ P0 只回答一件事：**这台手机能不能用「自写轻客户端 + PyAV �
 
 | 字段 | 实测值 | 说明 |
 |---|---|---|
-| `scrcpy_version` | 待回填 | 必须与 `scrcpy --version` 一致，且作为 `Server` 参数 |
-| `server_jar` | 待回填 | 需与 scrcpy 版本配套，路径由 `_detect_scrcpy_server()` 自动发现 |
-| `model` / `android_sdk` / `abi` | 待回填 | 来自 `adb devices -l` 与 `getprop` |
-| `wm_size` / `width` / `height` | 待回填 | `parse_wm_size` 必须优先取 `Override size` |
-| `frames` | 待回填 | 判定 ≥ 5 |
-| `first_packet_s` | 待回填 | 判定 ≤ 5 |
-| `mean_interval_ms` | 待回填 | 判定 ≤ 400 |
-| `inject_ms` | 待回填 | 判定与 80ms 偏差 ≤ 50ms |
-| `gate` | 待回填 | 必须为 `PASS` 才进入任务 15 的真机验收 |
+| `scrcpy_version` | `3.3.1` | 与 `scrcpy --version` 一致，作为 `Server` 参数 |
+| `server_jar` | `/usr/local/share/scrcpy/scrcpy-server`（90,788 B） | 路径由 `_detect_scrcpy_server()` 自动发现 |
+| `model` / `android_sdk` / `abi` | `ALP-AN00` / `34` / `arm64-v8a` | 来自 `adb devices -l` 与 `getprop` |
+| `wm_size` / `width` / `height` | `1200x2652` / `1200` / `2648` | 视频高度比物理高度少 4px，`size_mismatch=true`，以视频尺寸为准 |
+| `frames` | `45`（首轮）/ `21`（修复后） | 静态画面下编码器不产帧，10s 内帧数会波动 |
+| `first_packet_s` | `0.13` | 判定 ≤ 5 |
+| `mean_interval_ms` | `309.3` | 判定 ≤ 400；静态画面偏低帧率属正常 |
+| `inject_ms` | `84.5` / `87.2` | 目标 80ms，落在 0.8×~3× 区间 |
+| `gate` | `PASS` | 连续 3 次 PASS，失败路径退出码 1 |
+
+结论：**P0 结论 C2 通过**。同时实测出三处与直觉不同、已回写到任务 12/13 的协议细节：
+
+- 抽象 socket 名必须带 `scid`：`localabstract:scrcpy_<scid>`，且 scid 按 16 进制 int32 解析（`deadbeef` 会越界）。
+- server 必须等 video 与 control 两个 socket 都 accept 后才发 76 字节元数据，因此要先连 control 再读 meta。
+- 必须传 `send_dummy_byte=false`，否则元数据前会多一个字节；`12` 字节包头是 `pts(8)+size(4)`，config 位为 `1<<63`。
 
 结论判定：
 
-- `gate: PASS` → 记录「P0 结论：C2 通过」，继续任务 4 起的实现。
+- `gate: PASS` → 记录「P0 结论：C2 通过」，继续任务 4 起实现（本次已记录）。
 - `frames`/`first_packet_s` 不达标但 control 注入可用 → 记录「视频解码不达标，走 screencap 降级」，任务 14/15 已覆盖该路径。
 - control 注入不可用但视频可用 → 记录「control socket 不可用，注入降级 `adb shell input`」，任务 15 已实现该分支。
 - 两者都不可用 → 记录原因并停在 P0，不要继续 P1；此时需要更换 scrcpy 版本或改用 AutoX.js 端侧方案（属于 Plan 2 之外的新决策）。
