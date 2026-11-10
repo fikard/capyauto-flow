@@ -105,12 +105,16 @@ class _StubDecoded:
 
 
 class _FakeClock:
+    """虚拟时钟：sleep 不真等待，但推进 monotonic，使重连预算可被确定性测试。"""
+
     def __init__(self) -> None:
         self.sleeps: list[float] = []
         self.on_sleep = None
+        self._monotonic = time.monotonic()
 
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
+        self._monotonic += seconds
         if self.on_sleep is not None:
             self.on_sleep()
 
@@ -118,7 +122,7 @@ class _FakeClock:
         return time.time()
 
     def monotonic(self) -> float:
-        return time.monotonic()
+        return self._monotonic
 
 
 def build_meta_blob(name: bytes = b"pixel") -> bytes:
@@ -347,10 +351,13 @@ def test_decode_once_stores_jpeg_from_wire_packets():
     assert (frame.width, frame.height) == (64, 48)
 
 
-def test_decode_loop_gives_up_and_closes_after_consecutive_failures(monkeypatch, caplog):
+def test_decode_loop_gives_up_when_reconnect_budget_exhausted(monkeypatch, caplog):
     session, _adb = make_session()
     clock = _FakeClock()
     monkeypatch.setattr(scrcpy_session, "time", clock)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BUDGET_S", 1.0)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_BASE_S", 0.4)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_MAX_S", 0.4)
     opened: list[int] = []
     closed: list[int] = []
 
@@ -369,11 +376,50 @@ def test_decode_loop_gives_up_and_closes_after_consecutive_failures(monkeypatch,
         session.start()
         session._thread.join(5)
     assert not session._thread.is_alive()
-    assert len(opened) == 4  # start 1 次 + 3 次重连
-    assert len(closed) == 4  # 每次重连前 3 次 + 放弃时 1 次
-    assert clock.sleeps == [0.5, 1.0, 2.0]
+    assert len(opened) == 4  # start 1 次 + 预算内 3 次重连
+    assert len(closed) == 4  # 每次重连前 3 次 + 预算耗尽时 1 次
+    assert clock.sleeps == [0.4, 0.4, 0.4]
     assert session.stream_alive is False
     assert any(record.exc_info for record in caplog.records)
+
+
+def test_decode_loop_recovers_after_more_than_three_failures(monkeypatch):
+    """拔线 5s 插回：连续失败可超过旧实现的 3 次上限，只要仍在预算内就必须恢复。"""
+    session, _adb = make_session()
+    clock = _FakeClock()
+    monkeypatch.setattr(scrcpy_session, "time", clock)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BUDGET_S", 5.0)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_BASE_S", 0.1)
+    monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_MAX_S", 0.2)
+    opened: list[int] = []
+
+    def fake_open() -> None:
+        opened.append(1)
+        session.meta = VideoMeta(device_name="pixel", codec="h264", width=64, height=48)
+
+    monkeypatch.setattr(session, "_open_transport", fake_open)
+    monkeypatch.setattr(session, "_close_transport", lambda: None)
+
+    script = ["fail", "fail", "fail", "fail", "fail", "success"]
+
+    def decode_once() -> None:
+        step = script.pop(0)
+        if step == "success":
+            session._store(_StubDecoded())
+            return
+        raise ConnectionError("视频流中断")
+
+    monkeypatch.setattr(session, "_decode_once", decode_once)
+    session.start()
+    session._thread.join(5)
+    assert not session._thread.is_alive()
+    assert script == []
+    assert len(opened) == 6  # start 1 次 + 5 次重连（旧实现第 4 次即放弃）
+    assert clock.sleeps == [0.1, 0.2, 0.2, 0.2, 0.2]  # 退避指数增长且封顶
+    frame = session.latest()
+    assert frame is not None
+    assert frame.jpeg[:2] == b"\xff\xd8"
+    assert session.stream_alive is False
 
 
 def test_decode_loop_resets_attempt_after_decoded_frame(monkeypatch):
@@ -528,6 +574,21 @@ def test_open_transport_push_failure_removes_forward(monkeypatch):
     assert session.stream_alive is False
     session.stop()  # 失败后 stop() 必须幂等、不抛异常
     assert adb.calls[-1] == ("forward_remove", "SER123", 27183)
+
+
+def test_open_transport_rejects_invalid_server_version():
+    """server_version 会拼进设备 shell 命令，必须在拼接前拦住非法值。"""
+    session, adb = make_session(server_version="3.1; rm -rf /data/local/tmp")
+    with pytest.raises(ScrcpyUnavailable):
+        session._open_transport()
+    assert adb.calls == []
+
+
+def test_open_transport_rejects_malformed_server_version():
+    session, adb = make_session(server_version="3")
+    with pytest.raises(ScrcpyUnavailable):
+        session._open_transport()
+    assert adb.calls == []
 
 
 def test_open_transport_stop_between_push_and_shell_reaps_server(monkeypatch):

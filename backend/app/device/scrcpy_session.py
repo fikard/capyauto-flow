@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import random
+import re
 import socket
 import struct
 import subprocess
@@ -33,6 +34,12 @@ META_READ_TIMEOUT = 5.0
 CONTROL_READ_TIMEOUT = 5.0
 
 CODEC_IDS = {0x68323634: "h264", 0x68323635: "h265", 0x00617631: "av1"}
+
+# 拔线 5s 内插回必须能自动恢复：重连按时间预算而非次数，退避指数增长但封顶 3s（0.5/1/2/3/3…）。
+RECONNECT_BUDGET_S = 30.0
+RECONNECT_BACKOFF_BASE_S = 0.5
+RECONNECT_BACKOFF_MAX_S = 3.0
+SERVER_VERSION_RE = re.compile(r"^\d+(\.\d+){1,2}$")
 
 ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2
 MSG_INJECT_KEYCODE = 0
@@ -162,6 +169,9 @@ class ScrcpySession:
     def _open_transport(self) -> None:
         if self._stop.is_set():
             raise ScrcpyUnavailable("scrcpy 会话已停止")
+        # server_version 会原样拼进设备端 shell 命令，必须先校验格式
+        if not SERVER_VERSION_RE.match(self._server_version):
+            raise ScrcpyUnavailable(f"scrcpy 版本号非法: {self._server_version!r}")
         remote = "/data/local/tmp/scrcpy-server.jar"
         # scrcpy 3.x 的抽象 socket 名带 scid，且 scid 按 16 进制 int32 解析
         self._scid = f"{random.randrange(1, 0x7FFF_FFFF):08x}"
@@ -227,6 +237,7 @@ class ScrcpySession:
 
     def _decode_loop(self) -> None:
         attempt = 0
+        budget_deadline: float | None = None
         try:
             while not self._stop.is_set():
                 decoded_before = self._decoded_count
@@ -237,15 +248,21 @@ class ScrcpySession:
                     if self._stop.is_set():
                         return
                     if self._decoded_count > decoded_before:
-                        # 本轮已成功解出帧，说明「连续失败」应从 1 重新计数
+                        # 本轮已成功解出帧：视为新一次断流，失败计数与重连预算都从头开始
                         attempt = 0
+                        budget_deadline = None
+                    if budget_deadline is None:
+                        budget_deadline = time.monotonic() + RECONNECT_BUDGET_S
                     attempt += 1
-                    if attempt > 3:
-                        log.exception("scrcpy 连续 3 次重连失败，放弃重连: %s", exc)
+                    if time.monotonic() >= budget_deadline:
+                        log.exception("scrcpy 重连 %.0fs 预算耗尽，放弃重连: %s", RECONNECT_BUDGET_S, exc)
                         self._close_transport()
                         return
-                    log.warning("scrcpy 流中断（%s），第 %d 次重连", exc, attempt)
-                    time.sleep(0.5 * 2 ** (attempt - 1))
+                    backoff = min(
+                        RECONNECT_BACKOFF_BASE_S * 2 ** (attempt - 1), RECONNECT_BACKOFF_MAX_S
+                    )
+                    log.warning("scrcpy 流中断（%s），第 %d 次重连，%.1fs 后重试", exc, attempt, backoff)
+                    time.sleep(backoff)
                     if self._stop.is_set():
                         return
                     try:

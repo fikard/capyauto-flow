@@ -54,6 +54,7 @@ def test_non_numeric_frame_timeout_raises_system_exit(monkeypatch):
         ("CAPYAUTO_BACKEND_PORT", "70000"),
         ("CAPYAUTO_MIRROR_FPS", "0"),
         ("CAPYAUTO_JPEG_QUALITY", "999"),
+        ("CAPYAUTO_DISPLAY_WIDTH", "0"),
     ],
 )
 def test_out_of_range_raises_system_exit(monkeypatch, name, value):

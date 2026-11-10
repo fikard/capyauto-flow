@@ -83,3 +83,11 @@ def test_popen_shell_missing_binary_raises_adb_not_found(monkeypatch):
     with pytest.raises(AdbNotFound) as exc:
         runner.popen_shell("SERIAL", "true")
     assert exc.value.status_code == 503
+
+
+def test_forward_remove_swallows_missing_binary():
+    """关闭会话时 adb 已消失不应抛错：forward_remove 必须吞掉 AdbNotFound 等 ApiError。"""
+    exec_fn = fake_exec(raise_exc=FileNotFoundError("adb"))
+    runner = AdbRunner(exec_fn=exec_fn)
+    runner.forward_remove("SERIAL", 27183)
+    assert [call[0][:3] for call in exec_fn.calls] == [["adb", "-s", "SERIAL"]]

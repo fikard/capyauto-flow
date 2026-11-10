@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import logging
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -45,6 +46,17 @@ def detect_scrcpy_version(scrcpy_bin: str) -> str:
     return match.group(1)
 
 
+def _is_port_free(port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 class AdbScrcpyDevice(DeviceAdapter):
     name = "adb"
 
@@ -76,6 +88,9 @@ class AdbScrcpyDevice(DeviceAdapter):
         self._sessions: dict[str, MirrorSession] = {}
         self._scrcpy: dict[str, ScrcpySession] = {}
         self._pollers: dict[str, ScreencapPoller] = {}
+        self._ports_in_use: set[int] = set()
+        self._session_ports: dict[str, int] = {}
+        self._port_lock = threading.Lock()
         self._next_id = 1
         self._id_lock = threading.Lock()
 
@@ -158,6 +173,28 @@ class AdbScrcpyDevice(DeviceAdapter):
             self._next_id += 1
         return session_id
 
+    def _allocate_port(self) -> int:
+        # 每个 scrcpy 会话需要独立的 local tcp 端口，否则第二个 adb forward 会覆盖第一个，
+        # 且任一会话 close 的 forward_remove 会摘掉别人的 forward。
+        with self._port_lock:
+            if self._tcp_port not in self._ports_in_use and _is_port_free(self._tcp_port):
+                self._ports_in_use.add(self._tcp_port)
+                return self._tcp_port
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            finally:
+                probe.close()
+            self._ports_in_use.add(port)
+            return port
+
+    def _release_port(self, port: int | None) -> None:
+        if port is None:
+            return
+        with self._port_lock:
+            self._ports_in_use.discard(port)
+
     def _create_sync(self, serial: str, fps: int) -> MirrorSession:
         info = self._probe(serial)
         session_id = self._new_session_id()
@@ -170,6 +207,7 @@ class AdbScrcpyDevice(DeviceAdapter):
                 raise ScrcpyUnavailable("未找到 scrcpy-server jar，且 screencap 降级已禁用")
         else:
             transport: ScrcpySession | None = None
+            port = self._allocate_port()
             try:
                 transport = ScrcpySession(
                     session_id=session_id,
@@ -177,7 +215,7 @@ class AdbScrcpyDevice(DeviceAdapter):
                     adb=self._adb,
                     server_jar=self._server_jar,
                     server_version=self._version(),
-                    tcp_port=self._tcp_port,
+                    tcp_port=port,
                     fps=fps,
                     bitrate=self._bitrate,
                     jpeg_quality=self._jpeg_quality,
@@ -185,6 +223,7 @@ class AdbScrcpyDevice(DeviceAdapter):
                 )
                 meta = transport.start()
             except Exception as exc:  # noqa: BLE001 - 版本探测/建连失败统一走降级
+                self._release_port(port)
                 if transport is not None:
                     transport.stop()
                 if not self._allow_fallback:
@@ -206,6 +245,7 @@ class AdbScrcpyDevice(DeviceAdapter):
                 )
                 self._sessions[session_id] = session
                 self._scrcpy[session_id] = transport
+                self._session_ports[session_id] = port
                 return session
 
         # 降级通道按约 1fps 轮询：每次 screencap 都是完整 PNG 解码+JPEG 编码，开销远高于 scrcpy 复用码流。
@@ -240,13 +280,21 @@ class AdbScrcpyDevice(DeviceAdapter):
         await asyncio.to_thread(self._close_sync, session_id)
 
     def _close_sync(self, session_id: str) -> None:
+        # close 必须尽力而为且幂等：即使 transport/poller 清理失败（如 adb 二进制消失），
+        # 也必须先把三个会话表清空，避免残留表项让 DELETE 返回 503。
         transport = self._scrcpy.pop(session_id, None)
-        if transport is not None:
-            transport.stop()
         poller = self._pollers.pop(session_id, None)
-        if poller is not None:
-            poller.stop()
-        self._sessions.pop(session_id, None)
+        port = self._session_ports.pop(session_id, None)
+        try:
+            if transport is not None:
+                transport.stop()
+            if poller is not None:
+                poller.stop()
+        except Exception:  # noqa: BLE001 - 清理失败只告警
+            log.warning("关闭会话 %s 时清理失败（会话表已清空）", session_id, exc_info=True)
+        finally:
+            self._sessions.pop(session_id, None)
+            self._release_port(port)
 
     def get_session(self, session_id: str) -> MirrorSession:
         session = self._sessions.get(session_id)
@@ -266,6 +314,10 @@ class AdbScrcpyDevice(DeviceAdapter):
                 return
             frame: Frame | None = None
             if transport is not None:
+                # 重连/旋转后视频尺寸可能变化，会话尺寸与前端 meta 已固化，不能静默沿用旧值
+                meta = transport.meta
+                if meta is not None and (meta.width, meta.height) != (session.width, session.height):
+                    raise MirrorLost("视频尺寸已变化，请重建会话")
                 frame = transport.latest()
             elif poller is not None:
                 frame = poller.latest()

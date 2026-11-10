@@ -10,7 +10,7 @@ from app.device.adb import parse_devices
 from app.device.adb_device import AdbScrcpyDevice
 from app.device.base import Frame
 from app.device.scrcpy_session import VideoMeta
-from app.errors import MirrorLost, ScrcpyUnavailable
+from app.errors import AdbNotFound, MirrorLost, ScrcpyUnavailable
 
 DEVICES_OUTPUT = """List of devices attached
 R58M12ABCDE            device product:beyond1q model:SM_G9730 device:beyond1 transport_id:1
@@ -57,6 +57,7 @@ def make_fake_scrcpy(*, stream_alive=True, control_available=True, start_error=N
             self.kwargs = kwargs
             self.stream_alive = stream_alive
             self.control_available = control_available
+            self.meta: VideoMeta | None = None
             self.frame: Frame | None = None
             self.stop_calls = 0
             self.taps: list[tuple[int, int, int]] = []
@@ -65,7 +66,8 @@ def make_fake_scrcpy(*, stream_alive=True, control_available=True, start_error=N
         def start(self) -> VideoMeta:
             if start_error is not None:
                 raise start_error
-            return VideoMeta(device_name="fake", codec="h264", width=1080, height=2340)
+            self.meta = VideoMeta(device_name="fake", codec="h264", width=1080, height=2340)
+            return self.meta
 
         def latest(self) -> Frame | None:
             return self.frame
@@ -271,3 +273,73 @@ def test_tap_falls_back_to_adb_input_when_control_unavailable(monkeypatch):
     assert result.injected_via == "input"
     assert adb.runs and adb.runs[0][:3] == ("shell", "input", "swipe")
     assert fake.instances[0].taps == []
+
+
+def test_sessions_allocate_distinct_tcp_ports(monkeypatch):
+    """两个会话不能共用同一 local tcp 端口，否则第二个 forward 会覆盖第一个。"""
+    monkeypatch.setattr(adb_device, "_is_port_free", lambda port: True)
+    fake = make_fake_scrcpy()
+    monkeypatch.setattr(adb_device, "ScrcpySession", fake)
+    device = build_device(FakeAdb(), Path("/tmp/scrcpy-server.jar"))
+
+    asyncio.run(device.create_session("R58M12ABCDE", 5))
+    asyncio.run(device.create_session("R58M12ABCDE", 5))
+
+    first_port = fake.instances[0].kwargs["tcp_port"]
+    second_port = fake.instances[1].kwargs["tcp_port"]
+    assert first_port == 27183
+    assert second_port != first_port
+
+
+def test_closed_session_releases_its_tcp_port(monkeypatch):
+    monkeypatch.setattr(adb_device, "_is_port_free", lambda port: True)
+    fake = make_fake_scrcpy()
+    monkeypatch.setattr(adb_device, "ScrcpySession", fake)
+    device = build_device(FakeAdb(), Path("/tmp/scrcpy-server.jar"))
+
+    first = asyncio.run(device.create_session("R58M12ABCDE", 5))
+    asyncio.run(device.create_session("R58M12ABCDE", 5))
+    asyncio.run(device.close_session(first.id))
+    asyncio.run(device.create_session("R58M12ABCDE", 5))
+
+    first_port, second_port, third_port = (item.kwargs["tcp_port"] for item in fake.instances)
+    assert first_port == 27183
+    assert second_port != first_port
+    assert third_port == first_port  # 关闭后端口已释放，可复用且不与在用会话冲突
+
+
+def test_close_session_cleans_up_even_if_transport_stop_raises(monkeypatch, caplog):
+    """adb 二进制消失时 transport.stop() 会抛 AdbNotFound，close 仍须幂等且清空会话表。"""
+    fake = make_fake_scrcpy()
+    monkeypatch.setattr(adb_device, "ScrcpySession", fake)
+    device = build_device(FakeAdb(), Path("/tmp/scrcpy-server.jar"))
+    session = asyncio.run(device.create_session("R58M12ABCDE", 5))
+
+    def failing_stop() -> None:
+        raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy")
+
+    monkeypatch.setattr(fake.instances[0], "stop", failing_stop)
+    with caplog.at_level("WARNING", logger="capyauto.adb"):
+        asyncio.run(device.close_session(session.id))
+
+    assert device._sessions == {}
+    assert device._scrcpy == {}
+    assert device._pollers == {}
+    assert device._session_ports == {}
+    assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+def test_frames_raises_when_transport_meta_size_changes(monkeypatch):
+    """重连/旋转后视频尺寸变化：必须报错重建，不能继续用旧会话尺寸换算坐标。"""
+    fake = make_fake_scrcpy()
+    monkeypatch.setattr(adb_device, "ScrcpySession", fake)
+    device = build_device(FakeAdb(), Path("/tmp/scrcpy-server.jar"))
+    session = asyncio.run(device.create_session("R58M12ABCDE", 5))
+    fake.instances[0].meta = VideoMeta(device_name="fake", codec="h264", width=2340, height=1080)
+
+    async def consume():
+        async for _ in device.frames(session.id):
+            pytest.fail("尺寸变化后不应继续按旧尺寸推流")
+
+    with pytest.raises(MirrorLost):
+        asyncio.run(asyncio.wait_for(consume(), timeout=1.0))

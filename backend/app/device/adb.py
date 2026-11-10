@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.device.base import DeviceInfo
-from app.errors import AdbError, AdbNotFound, AdbTimeout
+from app.errors import AdbError, AdbNotFound, AdbTimeout, ApiError
 
 ExecFn = Callable[[list[str], float], tuple[int, bytes, bytes]]
 
@@ -104,9 +104,10 @@ class AdbRunner:
         self.run("forward", f"tcp:{local_port}", remote_spec, serial=serial)
 
     def forward_remove(self, serial: str, local_port: int) -> None:
+        # 清理路径必须尽力而为：adb 消失（AdbNotFound）或超时（AdbTimeout）都不应中断 close
         try:
             self.run("forward", "--remove", f"tcp:{local_port}", serial=serial)
-        except AdbError:
+        except ApiError:
             pass
 
     def exec_out(self, serial: str, *args) -> bytes:

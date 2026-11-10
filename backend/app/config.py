@@ -79,7 +79,7 @@ class Settings:
         default_factory=lambda: _env_int("CAPYAUTO_SCRCPY_TCP_PORT", 27183, lo=1, hi=65535)
     )
     mirror_fps: int = field(default_factory=lambda: _env_int("CAPYAUTO_MIRROR_FPS", 5, lo=1, hi=10))
-    display_width: int = field(default_factory=lambda: _env_int("CAPYAUTO_DISPLAY_WIDTH", 720))
+    display_width: int = field(default_factory=lambda: _env_int("CAPYAUTO_DISPLAY_WIDTH", 720, lo=1))
     jpeg_quality: int = field(default_factory=lambda: _env_int("CAPYAUTO_JPEG_QUALITY", 70, lo=1, hi=100))
     scrcpy_bitrate: int = field(default_factory=lambda: _env_int("CAPYAUTO_SCRCPY_BITRATE", 8_000_000, lo=1))
     frame_timeout: float = field(default_factory=lambda: _env_float("CAPYAUTO_FRAME_TIMEOUT", 10.0))
