@@ -1090,7 +1090,7 @@ def random_gaussian(mean: float, stdev: float, rng: Rng = random.random) -> floa
     u2 = rng()
     while u1 <= sys.float_info.epsilon:
         u1 = rng()
-    return mean + math.sqrt(-2.0 * math.log(u1)) * math.sin(2.0 * math.pi * u2)
+    return mean + math.sqrt(-2.0 * math.log(u1)) * math.sin(2.0 * math.pi * u2) * stdev
 
 
 @dataclass(frozen=True)
