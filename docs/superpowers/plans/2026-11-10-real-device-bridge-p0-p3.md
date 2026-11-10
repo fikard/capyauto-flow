@@ -1356,6 +1356,7 @@ class MockDevice(DeviceAdapter):
         self._height = height
         self._jpeg_quality = jpeg_quality
         self._sessions: dict[str, MirrorSession] = {}
+        self._next_id = 1
         self._seq = 0
         self._last_tap: tuple[int, int] | None = None
         self._keys: list[str] = []
@@ -1388,7 +1389,8 @@ class MockDevice(DeviceAdapter):
     async def create_session(self, serial: str, fps: int) -> MirrorSession:
         if serial != "MOCK-0001":
             raise DeviceNotFound(f"未找到设备 {serial}")
-        session_id = f"mock-{len(self._sessions) + 1}"
+        session_id = f"mock-{self._next_id}"
+        self._next_id += 1
         session = MirrorSession(
             id=session_id,
             serial=serial,
