@@ -2250,12 +2250,7 @@ ExecFn = Callable[[list[str], float], tuple[int, bytes, bytes]]
 
 
 def _subprocess_exec(argv: list[str], timeout: float) -> tuple[int, bytes, bytes]:
-    try:
-        proc = subprocess.run(argv, capture_output=True, timeout=timeout)
-    except FileNotFoundError as exc:
-        raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise AdbTimeout(f"adb 超时（{timeout}s）: {' '.join(argv)}") from exc
+    proc = subprocess.run(argv, capture_output=True, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -2314,7 +2309,13 @@ class AdbRunner:
         if serial:
             argv += ["-s", serial]
         argv += [str(arg) for arg in args]
-        code, out, err = self._exec_fn(argv, timeout or self.default_timeout)
+        effective_timeout = timeout or self.default_timeout
+        try:
+            code, out, err = self._exec_fn(argv, effective_timeout)
+        except FileNotFoundError as exc:
+            raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AdbTimeout(f"adb 超时（{effective_timeout}s）: {' '.join(argv)}") from exc
         if code != 0:
             raise AdbError(
                 f"adb 命令失败（{code}）: {' '.join(argv)}",
@@ -2351,11 +2352,14 @@ class AdbRunner:
         return self.run("exec-out", *args, serial=serial, binary=True, timeout=20)
 
     def popen_shell(self, serial: str, command: str) -> subprocess.Popen:
-        return subprocess.Popen(
-            [self.adb_path, "-s", serial, "shell", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            return subprocess.Popen(
+                [self.adb_path, "-s", serial, "shell", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
 ```
 
 - [ ] **步骤 4：运行测试确认通过**
