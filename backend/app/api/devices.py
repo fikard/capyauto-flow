@@ -31,5 +31,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
 
 @router.delete("/session/{session_id}")
 async def close_session(session_id: str) -> dict:
-    await get_adapter().close_session(session_id)
+    adapter = get_adapter()
+    adapter.get_session(session_id)  # 未知会话抛 SessionNotFound
+    await adapter.close_session(session_id)
     return {"ok": True}
