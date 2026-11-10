@@ -1,3 +1,7 @@
+from dataclasses import FrozenInstanceError
+
+import pytest
+
 from app.config import Settings
 
 
@@ -22,3 +26,53 @@ def test_env_override(monkeypatch):
     cfg = Settings()
     assert cfg.backend_port == 9099
     assert cfg.device_backend == "adb"
+
+
+def test_empty_string_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_BACKEND_PORT", "")
+    monkeypatch.setenv("CAPYAUTO_FRAME_TIMEOUT", "")
+    cfg = Settings()
+    assert cfg.backend_port == 8084
+    assert cfg.frame_timeout == 10.0
+
+
+def test_non_numeric_backend_port_raises_system_exit(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_BACKEND_PORT", "abc")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+def test_non_numeric_frame_timeout_raises_system_exit(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_FRAME_TIMEOUT", "abc")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CAPYAUTO_BACKEND_PORT", "70000"),
+        ("CAPYAUTO_MIRROR_FPS", "0"),
+        ("CAPYAUTO_JPEG_QUALITY", "999"),
+    ],
+)
+def test_out_of_range_raises_system_exit(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+def test_frame_timeout_accepts_float(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_FRAME_TIMEOUT", "2.5")
+    assert Settings().frame_timeout == 2.5
+
+
+def test_allow_screencap_fallback_false(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", "false")
+    assert Settings().allow_screencap_fallback is False
+
+
+def test_settings_is_frozen():
+    cfg = Settings()
+    with pytest.raises(FrozenInstanceError):
+        setattr(cfg, "backend_port", 1234)
