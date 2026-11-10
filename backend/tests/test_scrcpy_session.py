@@ -23,7 +23,7 @@ from app.device.scrcpy_session import (
     parse_packet_header,
     recv_exact,
 )
-from app.errors import InjectionFailed, ScrcpyUnavailable
+from app.errors import AdbError, InjectionFailed, ScrcpyUnavailable
 
 TOUCH_MSG_LEN = 32
 KEY_MSG_LEN = 14
@@ -493,3 +493,59 @@ def test_open_transport_aborts_when_stopped():
     with pytest.raises(ScrcpyUnavailable):
         session._open_transport()
     assert adb.calls == []
+
+
+class _TrackingProc:
+    def __init__(self) -> None:
+        self.terminated = 0
+        self.waited = 0
+        self.killed = 0
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waited += 1
+        return 0
+
+    def kill(self) -> None:
+        self.killed += 1
+
+
+def test_open_transport_push_failure_removes_forward(monkeypatch):
+    """forward 已建立但 push 失败：失败出口必须真实回收 forward，且对象仍可安全 stop()。"""
+    session, adb = make_session()
+
+    def failing_push(serial: str, local: Path, remote: str) -> None:
+        raise AdbError("push 超时")
+
+    monkeypatch.setattr(adb, "push", failing_push)
+    with pytest.raises(AdbError):
+        session._open_transport()
+    assert [call[0] for call in adb.calls] == ["forward", "forward_remove"]
+    assert session._server is None
+    assert session._video is None and session._control is None
+    assert session.stream_alive is False
+    session.stop()  # 失败后 stop() 必须幂等、不抛异常
+    assert adb.calls[-1] == ("forward_remove", "SER123", 27183)
+
+
+def test_open_transport_stop_between_push_and_shell_reaps_server(monkeypatch):
+    """覆盖 stop() 在 forward/push/popen_shell 之间介入：server 已 spawn 但 _stop 已置位，
+    _open_transport 走「已停止」失败出口；断言真实 terminate + forward_remove 已发生。"""
+    session, adb = make_session()
+    proc = _TrackingProc()
+
+    def spawning_shell(serial: str, command: str) -> _TrackingProc:
+        adb.calls.append(("popen_shell", serial, command))
+        session._stop.set()
+        return proc
+
+    monkeypatch.setattr(adb, "popen_shell", spawning_shell)
+    with pytest.raises(ScrcpyUnavailable):
+        session._open_transport()
+    assert proc.terminated == 1
+    assert proc.waited == 1
+    assert session._server is None
+    assert adb.calls[-1] == ("forward_remove", "SER123", 27183)
+    assert session.stream_alive is False

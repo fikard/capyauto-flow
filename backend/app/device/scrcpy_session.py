@@ -165,40 +165,46 @@ class ScrcpySession:
         remote = "/data/local/tmp/scrcpy-server.jar"
         # scrcpy 3.x 的抽象 socket 名带 scid，且 scid 按 16 进制 int32 解析
         self._scid = f"{random.randrange(1, 0x7FFF_FFFF):08x}"
-        self._adb.forward(self.serial, self._tcp_port, f"localabstract:scrcpy_{self._scid}")
-        self._adb.push(self.serial, self._server_jar, remote)
-        command = (
-            f"CLASSPATH={remote} app_process / com.genymobile.scrcpy.Server {self._server_version} "
-            f"log_level=info tunnel_forward=true audio=false video=true control=true "
-            f"scid={self._scid} send_dummy_byte=false "
-            f"max_fps={self._fps} video_bit_rate={self._bitrate} max_size=0 cleanup=true"
-        )
-        self._server = self._adb.popen_shell(self.serial, command)
-        # server 必须等 video 与 control 两个 socket 都 accept 后才发 76 字节元数据；
-        # adb forward 先于 server 监听时会立刻 EOF，所以整体重试。
-        deadline = time.time() + 10.0
-        last: Exception | None = None
-        while time.time() < deadline and not self._stop.is_set():
-            try:
-                self._video = self._connect(deadline_s=1.0, read_timeout=META_READ_TIMEOUT)
-                self._control = self._connect(deadline_s=1.0, read_timeout=CONTROL_READ_TIMEOUT)
-                self.meta = parse_device_meta(recv_exact(self._video, META_LEN))
-                self._video.settimeout(VIDEO_READ_TIMEOUT)
-                return
-            except (OSError, ConnectionError, ScrcpyUnavailable) as exc:
-                last = exc
-                for sock in (self._control, self._video):
-                    if sock is not None:
-                        try:
-                            sock.close()
-                        except OSError:
-                            pass
-                self._control = None
-                self._video = None
-                time.sleep(0.2)
-        if self._stop.is_set():
-            raise ScrcpyUnavailable("scrcpy 会话已停止")
-        raise ScrcpyUnavailable(f"scrcpy 会话建立失败: {last}")
+        try:
+            self._adb.forward(self.serial, self._tcp_port, f"localabstract:scrcpy_{self._scid}")
+            self._adb.push(self.serial, self._server_jar, remote)
+            command = (
+                f"CLASSPATH={remote} app_process / com.genymobile.scrcpy.Server {self._server_version} "
+                f"log_level=info tunnel_forward=true audio=false video=true control=true "
+                f"scid={self._scid} send_dummy_byte=false "
+                f"max_fps={self._fps} video_bit_rate={self._bitrate} max_size=0 cleanup=true"
+            )
+            self._server = self._adb.popen_shell(self.serial, command)
+            # server 必须等 video 与 control 两个 socket 都 accept 后才发 76 字节元数据；
+            # adb forward 先于 server 监听时会立刻 EOF，所以整体重试。
+            deadline = time.time() + 10.0
+            last: Exception | None = None
+            while time.time() < deadline and not self._stop.is_set():
+                try:
+                    self._video = self._connect(deadline_s=1.0, read_timeout=META_READ_TIMEOUT)
+                    self._control = self._connect(deadline_s=1.0, read_timeout=CONTROL_READ_TIMEOUT)
+                    self.meta = parse_device_meta(recv_exact(self._video, META_LEN))
+                    self._video.settimeout(VIDEO_READ_TIMEOUT)
+                    return
+                except (OSError, ConnectionError, ScrcpyUnavailable) as exc:
+                    last = exc
+                    for sock in (self._control, self._video):
+                        if sock is not None:
+                            try:
+                                sock.close()
+                            except OSError:
+                                pass
+                    self._control = None
+                    self._video = None
+                    time.sleep(0.2)
+            if self._stop.is_set():
+                raise ScrcpyUnavailable("scrcpy 会话已停止")
+            raise ScrcpyUnavailable(f"scrcpy 会话建立失败: {last}")
+        except BaseException:
+            # forward/push/server 可能已建立（尤其 stop() 在这几步之间介入），
+            # 任何失败出口都必须回收，否则 server 进程与 adb forward 会永久残留。
+            self._close_transport()
+            raise
 
     def _connect(self, deadline_s: float = 8.0, read_timeout: float = META_READ_TIMEOUT) -> socket.socket:
         end = time.time() + deadline_s
@@ -247,6 +253,8 @@ class ScrcpySession:
                         self._open_transport()
                     except Exception as restart_exc:  # noqa: BLE001
                         if self._stop.is_set():
+                            # _open_transport 已自清理，这里只是兜底，避免任何路径留下 server/forward
+                            self._close_transport()
                             return
                         log.error("重启 scrcpy 失败: %s", restart_exc)
         finally:
