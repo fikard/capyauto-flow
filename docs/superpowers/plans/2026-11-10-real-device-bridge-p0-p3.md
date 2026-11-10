@@ -3106,6 +3106,15 @@ git commit -m "feat: screencap 轮询降级通道"
 
 ### 任务 15：AdbScrcpyDevice 装配与真机镜像验证（P2）
 
+> **实测修订（审查后落地版本，以此为准）**
+>
+> 1. session id：计划的 `f"s{len(self._sessions) + 1}"` 在关闭会话后会与现存 id 碰撞（覆盖会话并泄漏 scrcpy server 与固定端口），已改为 `_new_session_id()` + `threading.Lock` 单调递增、永不回收；`get_session` 改用 `.get()` + 判空以避免并发 close 的 `KeyError`。
+> 2. `frames()` 失联判定：scrcpy 分支仅在 `not transport.stream_alive` 时抛 `MirrorLost`；流存活期间**不得**因「超过 `frame_timeout` 无新帧」抛错（静态画面约 10s 才出关键帧，否则 10 分钟镜像会被误杀）；重连期间 `stream_alive` 保持 True，WS 不中断。screencap 分支保留 deadline 超时。每轮检查会话是否已关闭，close 后生成器直接结束。
+> 3. 降级通道帧率固定 1 fps：`fallback_fps = min(fps, 1)`，同时传给 `ScreencapPoller` 与 `MirrorSession.fps`；scrcpy 通道仍用请求 fps。
+> 4. 坐标换算只用 `MirrorSession.width/height`；`ScreencapPoller.width/height` 是原始分辨率、`Frame.width/height` 是缩放后尺寸，二者均不得用于换算。
+> 5. 测试：`tests/test_adb_device.py` 最终 11 个用例（id 单调/并发唯一、fallback 两分支、async generator 形态、`stream_alive=False` 即抛、静态不误杀、screencap 超时、control 不可用走 input 兜底），全量 99 passed。
+> 6. **P2 真机实测（ALP-AN00, 1200x2648）**：`mode=scrcpy`、`degraded=false`、`sizeMismatch=true`（wm 1200x2652）；连续运动 12s 得 49 帧（4.08 fps）；静止画面 40s 得 32 帧且无 `MIRROR_LOST`；`adb shell pkill -f com.genymobile.scrcpy.Server` 后 1.5s 恢复出帧、25s 内 101 帧、0 错误；10 分钟持续运动 soak 见第 4 节记录。
+
 **文件：**
 - 创建：`backend/app/device/adb_device.py`
 - 创建：`backend/tests/test_adb_device.py`
@@ -3606,6 +3615,13 @@ git commit -m "feat: AdbScrcpyDevice 会话装配、镜像推流与降级"
 ---
 
 ### 任务 16：控制注入 API 与真机验证（P3）
+
+> **实测修订（落地版本）**
+>
+> 1. 路由与响应字段按计划逐字落地：tap 返回 `targetX/targetY/realX/realY/pressMs/injectedVia/deviceWidth/deviceHeight`，swipe 返回 `points/injectedVia`，key 返回 `{"ok": true}`；错误全部由既有 `ApiError` handler 映射（越界 400 `OUT_OF_BOUNDS`、未知会话 404 `SESSION_NOT_FOUND`、未知按键 400 `UNKNOWN_KEY`），路由内不捕获异常。
+> 2. `main.py` 仅新增 import 与 `include_router(control.router)`，未重排既有路由。
+> 3. 测试：`tests/test_api_control.py` 6 个用例（MockDevice，`sigma=0, pressStdev=0` 消除随机性），全量 105 passed。
+> 4. **P3 真机实测**见第 4 节记录（tap 落点与 `getevent` 读数、按压往返时长、越界、swipe、key）。
 
 **文件：**
 - 创建：`backend/app/api/control.py`
