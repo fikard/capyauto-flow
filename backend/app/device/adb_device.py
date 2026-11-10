@@ -5,6 +5,7 @@ import dataclasses
 import logging
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -76,6 +77,7 @@ class AdbScrcpyDevice(DeviceAdapter):
         self._scrcpy: dict[str, ScrcpySession] = {}
         self._pollers: dict[str, ScreencapPoller] = {}
         self._next_id = 1
+        self._id_lock = threading.Lock()
 
     # ---------- 基础能力 ----------
 
@@ -149,9 +151,11 @@ class AdbScrcpyDevice(DeviceAdapter):
     # ---------- 会话 ----------
 
     def _new_session_id(self) -> str:
-        # 单调递增，绝不因关闭会话而回退复用（复用会覆盖现存会话）
-        session_id = f"s{self._next_id}"
-        self._next_id += 1
+        # 单调递增，绝不因关闭会话而回退复用（复用会覆盖现存会话）；
+        # _create_sync 在 asyncio.to_thread 中并发执行，自增必须加锁。
+        with self._id_lock:
+            session_id = f"s{self._next_id}"
+            self._next_id += 1
         return session_id
 
     def _create_sync(self, serial: str, fps: int) -> MirrorSession:
@@ -204,8 +208,16 @@ class AdbScrcpyDevice(DeviceAdapter):
                 self._scrcpy[session_id] = transport
                 return session
 
+        # 降级通道按约 1fps 轮询：每次 screencap 都是完整 PNG 解码+JPEG 编码，开销远高于 scrcpy 复用码流。
+        fallback_fps = min(fps, 1)
         poller = ScreencapPoller(
-            self._adb, serial, fallback_width, fallback_height, fps, self._jpeg_quality, self._display_width
+            self._adb,
+            serial,
+            fallback_width,
+            fallback_height,
+            fallback_fps,
+            self._jpeg_quality,
+            self._display_width,
         )
         poller.start()
         session = MirrorSession(
@@ -213,7 +225,7 @@ class AdbScrcpyDevice(DeviceAdapter):
             serial=serial,
             width=fallback_width,
             height=fallback_height,
-            fps=fps,
+            fps=fallback_fps,
             degraded=True,
             mode="screencap",
         )
@@ -237,9 +249,10 @@ class AdbScrcpyDevice(DeviceAdapter):
         self._sessions.pop(session_id, None)
 
     def get_session(self, session_id: str) -> MirrorSession:
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             raise SessionNotFound(f"会话不存在: {session_id}")
-        return self._sessions[session_id]
+        return session
 
     async def frames(self, session_id: str):
         session = self.get_session(session_id)
@@ -249,6 +262,8 @@ class AdbScrcpyDevice(DeviceAdapter):
         deadline = time.monotonic() + self._frame_timeout
         tick = min(1.0 / max(session.fps, 1), 0.25) / 4
         while True:
+            if self._sessions.get(session_id) is None:
+                return
             frame: Frame | None = None
             if transport is not None:
                 frame = transport.latest()
@@ -259,6 +274,13 @@ class AdbScrcpyDevice(DeviceAdapter):
                 deadline = time.monotonic() + self._frame_timeout
                 # Frame.width/height 是缩放后的展示尺寸，不可用于坐标换算
                 yield frame
+            elif transport is not None:
+                # scrcpy 静态画面约 10s 才出一个关键帧，不能用 deadline 判失联；
+                # 只认流存活：重连期间 stream_alive 仍为 True，拔插不会打断镜像。
+                if not transport.stream_alive:
+                    if self._sessions.get(session_id) is None:
+                        return
+                    raise MirrorLost(f"scrcpy 流已断开（mode={session.mode}）")
             elif time.monotonic() > deadline:
                 raise MirrorLost(f"{self._frame_timeout}s 内没有新帧（mode={session.mode}）")
             await asyncio.sleep(tick)
