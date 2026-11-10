@@ -72,3 +72,14 @@ def test_missing_binary_raises_adb_not_found():
     with pytest.raises(AdbNotFound) as exc:
         runner.devices()
     assert exc.value.status_code == 503
+
+
+def test_popen_shell_missing_binary_raises_adb_not_found(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("adb")
+
+    monkeypatch.setattr("app.device.adb.subprocess.Popen", _raise)
+    runner = AdbRunner()
+    with pytest.raises(AdbNotFound) as exc:
+        runner.popen_shell("SERIAL", "true")
+    assert exc.value.status_code == 503

@@ -113,8 +113,11 @@ class AdbRunner:
         return self.run("exec-out", *args, serial=serial, binary=True, timeout=20)
 
     def popen_shell(self, serial: str, command: str) -> subprocess.Popen:
-        return subprocess.Popen(
-            [self.adb_path, "-s", serial, "shell", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            return subprocess.Popen(
+                [self.adb_path, "-s", serial, "shell", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
