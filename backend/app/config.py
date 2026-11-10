@@ -74,7 +74,7 @@ class Settings:
     adb_path: str = field(default_factory=lambda: os.environ.get("CAPYAUTO_ADB", "adb"))
     scrcpy_bin: str = field(default_factory=lambda: os.environ.get("CAPYAUTO_SCRCPY", "scrcpy"))
     scrcpy_server: Path | None = field(default_factory=_detect_scrcpy_server)
-    scrcpy_version: str | None = field(default_factory=lambda: os.environ.get("CAPYAUTO_SCRCPY_VERSION"))
+    scrcpy_version: str | None = field(default_factory=lambda: os.environ.get("CAPYAUTO_SCRCPY_VERSION") or None)
     scrcpy_tcp_port: int = field(
         default_factory=lambda: _env_int("CAPYAUTO_SCRCPY_TCP_PORT", 27183, lo=1, hi=65535)
     )

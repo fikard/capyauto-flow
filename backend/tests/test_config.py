@@ -72,6 +72,11 @@ def test_allow_screencap_fallback_false(monkeypatch):
     assert Settings().allow_screencap_fallback is False
 
 
+def test_empty_scrcpy_version_is_none(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_SCRCPY_VERSION", "")
+    assert Settings().scrcpy_version is None
+
+
 def test_settings_is_frozen():
     cfg = Settings()
     with pytest.raises(FrozenInstanceError):
