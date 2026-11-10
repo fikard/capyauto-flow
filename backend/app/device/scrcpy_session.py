@@ -25,6 +25,13 @@ META_LEN = 76
 PACKET_HEADER_LEN = 12
 MAX_PACKET_SIZE = 8 * 1024 * 1024
 
+# scrcpy 静态画面时默认约 10s 才发一个关键帧，读超时必须大于该间隔并留余量，
+# 否则「屏幕静止」会被误判为断流；拔线时仍能在 ≤ VIDEO_READ_TIMEOUT 内感知。
+VIDEO_READ_TIMEOUT = 20.0
+# 握手期（读 76 字节 meta）与 control socket 沿用较短的 5s，避免建立失败时长时间卡住。
+META_READ_TIMEOUT = 5.0
+CONTROL_READ_TIMEOUT = 5.0
+
 CODEC_IDS = {0x68323634: "h264", 0x68323635: "h265", 0x00617631: "av1"}
 
 ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2
@@ -124,8 +131,11 @@ class ScrcpySession:
         self._jpeg_quality = jpeg_quality
         self._display_width = display_width
         self._lock = threading.Lock()
+        self._inject_lock = threading.Lock()
         self._frame: Frame | None = None
         self._seq = 0
+        self._decoded_count = 0
+        self._stream_alive = False
         self._stop = threading.Event()
         self._video: socket.socket | None = None
         self._control: socket.socket | None = None
@@ -136,14 +146,22 @@ class ScrcpySession:
     def control_available(self) -> bool:
         return self._control is not None
 
+    @property
+    def stream_alive(self) -> bool:
+        return self._stream_alive
+
     def start(self) -> VideoMeta:
         self._open_transport()
+        if self.meta is None:
+            raise ScrcpyUnavailable("scrcpy 会话未建立")
+        self._stream_alive = True
         self._thread = threading.Thread(target=self._decode_loop, name=f"scrcpy-{self.session_id}", daemon=True)
         self._thread.start()
-        assert self.meta is not None
         return self.meta
 
     def _open_transport(self) -> None:
+        if self._stop.is_set():
+            raise ScrcpyUnavailable("scrcpy 会话已停止")
         remote = "/data/local/tmp/scrcpy-server.jar"
         # scrcpy 3.x 的抽象 socket 名带 scid，且 scid 按 16 进制 int32 解析
         self._scid = f"{random.randrange(1, 0x7FFF_FFFF):08x}"
@@ -160,11 +178,12 @@ class ScrcpySession:
         # adb forward 先于 server 监听时会立刻 EOF，所以整体重试。
         deadline = time.time() + 10.0
         last: Exception | None = None
-        while time.time() < deadline:
+        while time.time() < deadline and not self._stop.is_set():
             try:
-                self._video = self._connect(deadline_s=1.0)
-                self._control = self._connect(deadline_s=1.0)
+                self._video = self._connect(deadline_s=1.0, read_timeout=META_READ_TIMEOUT)
+                self._control = self._connect(deadline_s=1.0, read_timeout=CONTROL_READ_TIMEOUT)
                 self.meta = parse_device_meta(recv_exact(self._video, META_LEN))
+                self._video.settimeout(VIDEO_READ_TIMEOUT)
                 return
             except (OSError, ConnectionError, ScrcpyUnavailable) as exc:
                 last = exc
@@ -177,19 +196,23 @@ class ScrcpySession:
                 self._control = None
                 self._video = None
                 time.sleep(0.2)
+        if self._stop.is_set():
+            raise ScrcpyUnavailable("scrcpy 会话已停止")
         raise ScrcpyUnavailable(f"scrcpy 会话建立失败: {last}")
 
-    def _connect(self, deadline_s: float = 8.0) -> socket.socket:
+    def _connect(self, deadline_s: float = 8.0, read_timeout: float = META_READ_TIMEOUT) -> socket.socket:
         end = time.time() + deadline_s
         last: Exception | None = None
-        while time.time() < end:
+        while time.time() < end and not self._stop.is_set():
             try:
                 sock = socket.create_connection(("127.0.0.1", self._tcp_port), timeout=3.0)
-                sock.settimeout(5.0)
+                sock.settimeout(read_timeout)
                 return sock
             except OSError as exc:
                 last = exc
                 time.sleep(0.1)
+        if self._stop.is_set():
+            raise ScrcpyUnavailable("scrcpy 会话已停止")
         raise ScrcpyUnavailable(f"连接 scrcpy 端口 {self._tcp_port} 失败: {last}")
 
     def latest(self) -> Frame | None:
@@ -198,36 +221,51 @@ class ScrcpySession:
 
     def _decode_loop(self) -> None:
         attempt = 0
-        while not self._stop.is_set():
-            try:
-                self._decode_once()
-                return
-            except Exception as exc:  # noqa: BLE001 - 任何异常都进入重连
-                if self._stop.is_set():
-                    return
-                attempt += 1
-                if attempt > 3:
-                    log.error("scrcpy 连续 3 次重连失败: %s", exc)
-                    return
-                log.warning("scrcpy 流中断（%s），第 %d 次重连", exc, attempt)
-                time.sleep(0.5 * 2 ** (attempt - 1))
+        try:
+            while not self._stop.is_set():
+                decoded_before = self._decoded_count
                 try:
-                    self._close_transport()
-                    self._open_transport()
-                except Exception as restart_exc:  # noqa: BLE001
-                    log.error("重启 scrcpy 失败: %s", restart_exc)
+                    self._decode_once()
+                    return
+                except Exception as exc:  # noqa: BLE001 - 任何异常都进入重连
+                    if self._stop.is_set():
+                        return
+                    if self._decoded_count > decoded_before:
+                        # 本轮已成功解出帧，说明「连续失败」应从 1 重新计数
+                        attempt = 0
+                    attempt += 1
+                    if attempt > 3:
+                        log.exception("scrcpy 连续 3 次重连失败，放弃重连: %s", exc)
+                        self._close_transport()
+                        return
+                    log.warning("scrcpy 流中断（%s），第 %d 次重连", exc, attempt)
+                    time.sleep(0.5 * 2 ** (attempt - 1))
+                    if self._stop.is_set():
+                        return
+                    try:
+                        self._close_transport()
+                        self._open_transport()
+                    except Exception as restart_exc:  # noqa: BLE001
+                        if self._stop.is_set():
+                            return
+                        log.error("重启 scrcpy 失败: %s", restart_exc)
+        finally:
+            self._stream_alive = False
 
     def _decode_once(self) -> None:
-        assert self._video is not None and self.meta is not None
-        ctx = av.CodecContext.create(self.meta.codec, "r")
+        video = self._video
+        meta = self.meta
+        if video is None or meta is None:
+            raise ScrcpyUnavailable("scrcpy 会话尚未启动")
+        ctx = av.CodecContext.create(meta.codec, "r")
         last_emit = 0.0
         while not self._stop.is_set():
             _pts_flags, is_config, _is_key, size = parse_packet_header(
-                recv_exact(self._video, PACKET_HEADER_LEN)
+                recv_exact(video, PACKET_HEADER_LEN)
             )
             if size <= 0 or size > MAX_PACKET_SIZE:
                 raise ConnectionError(f"帧长度异常: {size}")
-            payload = recv_exact(self._video, size)
+            payload = recv_exact(video, size)
             if is_config:
                 # scrcpy 把 SPS/PPS 单独放在 config 包里，必须喂给解码器否则关键帧无法解出
                 for packet in ctx.parse(payload):
@@ -248,6 +286,7 @@ class ScrcpySession:
             image = image.resize((self._display_width, max(1, int(image.height * ratio))), Image.BILINEAR)
         buffer = io.BytesIO()
         image.save(buffer, "JPEG", quality=self._jpeg_quality)
+        self._decoded_count += 1
         with self._lock:
             self._seq += 1
             self._frame = Frame(
@@ -255,35 +294,60 @@ class ScrcpySession:
             )
 
     def tap(self, x: int, y: int, press_ms: int) -> None:
-        assert self.meta is not None
-        self._send(build_touch(ACTION_DOWN, 0, x, y, self.meta.width, self.meta.height))
-        time.sleep(press_ms / 1000)
-        self._send(build_touch(ACTION_UP, 0, x, y, self.meta.width, self.meta.height))
+        meta = self.meta
+        if meta is None:
+            raise InjectionFailed("scrcpy 会话尚未启动")
+        with self._inject_lock:
+            self._send(build_touch(ACTION_DOWN, 0, x, y, meta.width, meta.height))
+            time.sleep(press_ms / 1000)
+            self._send(build_touch(ACTION_UP, 0, x, y, meta.width, meta.height))
 
     def swipe(self, points: list[tuple[int, int]], duration_ms: int) -> None:
-        assert self.meta is not None
+        meta = self.meta
+        if meta is None:
+            raise InjectionFailed("scrcpy 会话尚未启动")
         if not points:
             raise InjectionFailed("滑轨为空")
         step = (duration_ms / 1000) / max(len(points) - 1, 1)
-        self._send(build_touch(ACTION_DOWN, 0, points[0][0], points[0][1], self.meta.width, self.meta.height))
-        for px, py in points[1:-1]:
-            time.sleep(step)
-            self._send(build_touch(ACTION_MOVE, 0, px, py, self.meta.width, self.meta.height))
-        time.sleep(step)
-        last_x, last_y = points[-1]
-        self._send(build_touch(ACTION_UP, 0, last_x, last_y, self.meta.width, self.meta.height))
+        with self._inject_lock:
+            cur_x, cur_y = points[0]
+            self._send(build_touch(ACTION_DOWN, 0, cur_x, cur_y, meta.width, meta.height))
+            released = False
+            try:
+                for px, py in points[1:-1]:
+                    time.sleep(step)
+                    cur_x, cur_y = px, py
+                    self._send(build_touch(ACTION_MOVE, 0, cur_x, cur_y, meta.width, meta.height))
+                time.sleep(step)
+                cur_x, cur_y = points[-1]
+                self._send(build_touch(ACTION_UP, 0, cur_x, cur_y, meta.width, meta.height))
+                released = True
+            finally:
+                if not released:
+                    # 中途失败也必须补发 UP，避免设备端残留按下状态
+                    try:
+                        self._send(build_touch(ACTION_UP, 0, cur_x, cur_y, meta.width, meta.height))
+                    except Exception:  # noqa: BLE001
+                        log.warning("补发 ACTION_UP 失败", exc_info=True)
 
     def key(self, keycode: int) -> None:
-        self._send(build_key(0, keycode))
-        time.sleep(0.02)
-        self._send(build_key(1, keycode))
+        with self._inject_lock:
+            self._send(build_key(0, keycode))
+            time.sleep(0.02)
+            self._send(build_key(1, keycode))
 
     def _send(self, payload: bytes) -> None:
-        if self._control is None:
+        sock = self._control
+        if sock is None:
             raise InjectionFailed("control socket 不可用")
         try:
-            self._control.sendall(payload)
+            sock.sendall(payload)
         except OSError as exc:
+            self._control = None
+            try:
+                sock.close()
+            except OSError:
+                pass
             raise InjectionFailed(f"control socket 写入失败: {exc}") from exc
 
     def _close_transport(self) -> None:
@@ -309,3 +373,4 @@ class ScrcpySession:
         self._close_transport()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=3)
+        self._stream_alive = False
