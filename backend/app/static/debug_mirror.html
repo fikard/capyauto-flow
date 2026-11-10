@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>CapyAuto 镜像调试</title>
+  <style>
+    body { margin: 0; background: #0f141a; color: #cfe3dd; font: 13px/1.5 ui-monospace, monospace; display: flex; gap: 16px; padding: 16px; }
+    #stage { position: relative; height: 90vh; }
+    #screen { height: 100%; display: block; background: #000; }
+    #overlay { position: absolute; inset: 0; cursor: crosshair; }
+    #side { min-width: 260px; }
+    .dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%); }
+    .intent { border: 1px solid #6ee7b7; }
+    .real { background: #f87171; }
+    input { width: 70px; background: #1b2530; color: #cfe3dd; border: 1px solid #2f3d4a; }
+    button { background: #1b2530; color: #cfe3dd; border: 1px solid #2f3d4a; padding: 4px 10px; cursor: pointer; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <img id="screen" alt="mirror" />
+    <div id="overlay"></div>
+  </div>
+  <div id="side">
+    <p>会话：<input id="sid" value="" /></p>
+    <p><button id="connect">连接</button> <button id="disconnect">断开</button></p>
+    <p>sigma <input id="sigma" value="6" /> press <input id="press" value="80" /></p>
+    <pre id="log"></pre>
+  </div>
+  <script>
+    const logEl = document.getElementById("log");
+    const img = document.getElementById("screen");
+    const overlay = document.getElementById("overlay");
+    const sidEl = document.getElementById("sid");
+    const params = new URLSearchParams(location.search);
+    if (params.get("sessionId")) sidEl.value = params.get("sessionId");
+    let ws = null;
+
+    function log(line) {
+      logEl.textContent = `${new Date().toLocaleTimeString()} ${line}\n` + logEl.textContent;
+    }
+
+    function connect() {
+      if (ws) return;
+      ws = new WebSocket(`ws://${location.host}/ws/mirror?sessionId=${encodeURIComponent(sidEl.value)}`);
+      ws.binaryType = "arraybuffer";
+      ws.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "meta") log(`meta ${msg.width}x${msg.height} fps=${msg.fps} degraded=${msg.degraded}`);
+          else log(`error ${msg.code} ${msg.message ?? ""}`);
+          return;
+        }
+        const url = URL.createObjectURL(new Blob([event.data], { type: "image/jpeg" }));
+        img.onload = () => URL.revokeObjectURL(url);
+        img.src = url;
+        fitStage();
+      };
+      ws.onclose = () => log("ws closed");
+      log(`connecting ${sidEl.value}`);
+    }
+
+    function disconnect() {
+      if (ws) ws.close();
+      ws = null;
+    }
+
+    function fitStage() {
+      document.getElementById("stage").style.width = `${img.clientWidth}px`;
+    }
+
+    overlay.addEventListener("click", async (event) => {
+      if (!ws) return;
+      const rect = img.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+      const body = {
+        sessionId: sidEl.value,
+        x, y,
+        sigma: Number(document.getElementById("sigma").value),
+        pressMs: Number(document.getElementById("press").value),
+        pressStdev: 0,
+      };
+      const resp = await fetch("/api/control/tap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      log(JSON.stringify(data));
+      if (data.realX === undefined) return;
+      mark(rect.width * x, rect.height * y, "intent");
+      mark(rect.width * data.realX / data.deviceWidth, rect.height * data.realY / data.deviceHeight, "real");
+    });
+
+    function mark(px, py, cls) {
+      const dot = document.createElement("div");
+      dot.className = `dot ${cls}`;
+      dot.style.left = `${px}px`;
+      dot.style.top = `${py}px`;
+      overlay.appendChild(dot);
+      setTimeout(() => dot.remove(), 1500);
+    }
+
+    document.getElementById("connect").onclick = connect;
+    document.getElementById("disconnect").onclick = disconnect;
+    window.addEventListener("resize", fitStage);
+  </script>
+</body>
+</html>
