@@ -262,8 +262,8 @@ class ScrcpySession:
                         RECONNECT_BACKOFF_BASE_S * 2 ** (attempt - 1), RECONNECT_BACKOFF_MAX_S
                     )
                     log.warning("scrcpy 流中断（%s），第 %d 次重连，%.1fs 后重试", exc, attempt, backoff)
-                    time.sleep(backoff)
-                    if self._stop.is_set():
+                    # Event.wait 可被 stop() 立即唤醒，避免 DELETE 被最长 3s 的退避拖住
+                    if self._stop.wait(backoff):
                         return
                     try:
                         self._close_transport()

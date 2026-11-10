@@ -125,6 +125,20 @@ class _FakeClock:
         return self._monotonic
 
 
+class _FakeStop(threading.Event):
+    """把 wait() 转给虚拟时钟：退避不真等待，且仍能模拟 stop() 唤醒。"""
+
+    def __init__(self, clock: _FakeClock) -> None:
+        super().__init__()
+        self._clock = clock
+
+    def wait(self, timeout: float | None = None) -> bool:  # type: ignore[override]
+        if self.is_set():
+            return True
+        self._clock.sleep(timeout or 0.0)
+        return self.is_set()
+
+
 def build_meta_blob(name: bytes = b"pixel") -> bytes:
     return struct.pack(">64sIII", name, 0x68323634, 1080, 1920)
 
@@ -358,6 +372,7 @@ def test_decode_loop_gives_up_when_reconnect_budget_exhausted(monkeypatch, caplo
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BUDGET_S", 1.0)
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_BASE_S", 0.4)
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_MAX_S", 0.4)
+    session._stop = _FakeStop(clock)
     opened: list[int] = []
     closed: list[int] = []
 
@@ -391,6 +406,7 @@ def test_decode_loop_recovers_after_more_than_three_failures(monkeypatch):
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BUDGET_S", 5.0)
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_BASE_S", 0.1)
     monkeypatch.setattr(scrcpy_session, "RECONNECT_BACKOFF_MAX_S", 0.2)
+    session._stop = _FakeStop(clock)
     opened: list[int] = []
 
     def fake_open() -> None:
@@ -426,6 +442,7 @@ def test_decode_loop_resets_attempt_after_decoded_frame(monkeypatch):
     session, _adb = make_session()
     clock = _FakeClock()
     monkeypatch.setattr(scrcpy_session, "time", clock)
+    session._stop = _FakeStop(clock)
     opened: list[int] = []
     closed: list[int] = []
 
@@ -459,6 +476,7 @@ def test_backoff_aborts_reopen_when_stopped(monkeypatch):
     session, _adb = make_session()
     clock = _FakeClock()
     monkeypatch.setattr(scrcpy_session, "time", clock)
+    session._stop = _FakeStop(clock)
     opened: list[int] = []
     monkeypatch.setattr(session, "_open_transport", lambda: opened.append(1))
     monkeypatch.setattr(session, "_close_transport", lambda: None)
@@ -470,6 +488,7 @@ def test_backoff_aborts_reopen_when_stopped(monkeypatch):
     clock.on_sleep = session._stop.set
     session._decode_loop()
     assert opened == []
+    assert session._stop.is_set()
 
 
 def test_stream_alive_tracks_thread_lifecycle(monkeypatch):
