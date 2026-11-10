@@ -3871,6 +3871,37 @@ P0 只回答一件事：**这台手机能不能用「自写轻客户端 + PyAV �
 - control 注入不可用但视频可用 → 记录「control socket 不可用，注入降级 `adb shell input`」，任务 15 已实现该分支。
 - 两者都不可用 → 记录原因并停在 P0，不要继续 P1；此时需要更换 scrcpy 版本或改用 AutoX.js 端侧方案（属于 Plan 2 之外的新决策）。
 
+### 4.1 P2 真机验收记录（任务 15 步骤 6）
+
+设备 ALP-AN00（`ANASUT3C20010476`），`mode=scrcpy`、`degraded=false`、`sizeMismatch=true`（wm 1200x2652，视频 1200x2648）。
+
+| 场景 | 方法 | 结果 |
+|---|---|---|
+| 运动画面帧率 | 每 200ms 一次 `adb shell input swipe` 微动，统计 WS 二进制帧 | 12s 49 帧 = **4.08 fps**（目标 5） |
+| 静态画面不误判断流 | 40s 不发输入 | 32 帧，**无 `MIRROR_LOST`**（验证 `stream_alive` 判定） |
+| 断流恢复 | `adb shell pkill -f com.genymobile.scrcpy.Server` | **1.5s 恢复出帧**，25s 内 101 帧、0 错误 |
+| 连续 10 分钟 | 10 分钟持续微动，统计帧/分钟与最大帧间隔 | **2483 帧，均值 4.14 fps，最大间隔 0.47s，0 错误** |
+
+结论：P2 通过（实际 4.14 fps 为 5 fps 目标下 1200x2648@8Mbps 的正常上界）。
+
+### 4.2 P3 真机验收记录（任务 16 步骤 6）
+
+会话 1200x2648，`injectedVia` 全部为 `scrcpy`（control socket 通道）。
+
+| 用例 | 请求 | 结果 |
+|---|---|---|
+| 中心点落点 | tap `x=0.5,y=0.5,sigma=0,pressMs=80,pressStdev=0` | `targetX/Y=600,1324`、`realX/Y=600,1324`、`deviceWidth/Height=1200,2648` ✅ |
+| 高斯抖动 | 同点 `sigma=6` 连点 10 次 | 落点散布 600±15 / 1324±8，全部在 0–宽高内 ✅ |
+| 越界 | tap `x=1.5,y=0.5` | HTTP **400 `OUT_OF_BOUNDS`** ✅ |
+| 未知会话 | tap `sessionId=nope` | HTTP 404 `SESSION_NOT_FOUND` ✅ |
+| 未知按键 | key `nope` | HTTP **400 `UNKNOWN_KEY`**（含可选键列表）✅ |
+| 按压时长 | 5 次中心 tap 的往返耗时 | 94.2 / 104.2 / 102.6 / 106.2 / 99.8 ms，`pressMs=80`，delta +14.2~+26.2ms（含 HTTP 与进程开销）；P0 探针实测注入 84.5~87.2ms ✅ |
+| 滑动 | `(0.5,0.8) → (0.5,0.2)` 300ms | 11 点，首点 `[600,2118]`、末点 `[600,530]`（= 0.8/0.2 × 2648）✅ |
+| 按键 `back` | 系统设置在前台时注入 | 设置退出、`topResumedActivity` 变为 `com.hihonor.android.launcher/.unihome.UniHomeLauncher` ✅ |
+
+说明：HarmonyOS 上 `adb shell getevent` 不返回触摸轴（无权限），无法逐像素读取落点；改用两条功能证据交叉验证：① 中心连点后前台 Activity 变为 `Settings$BluetoothSettingsActivity`（设置列表的中心条目被点中）；② 后端返回值严格等于 `round(0.5 × 视频宽高)`，10 次抖动全部落在界内。P3 通过。
+
+
 ---
 
 ## 5. Plan 2（P4–P7）范围说明
