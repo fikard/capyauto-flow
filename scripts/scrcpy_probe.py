@@ -15,6 +15,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -136,6 +137,10 @@ def main() -> int:
     remote = "/data/local/tmp/scrcpy-server.jar"
 
     sh(["adb", "-s", serial, "push", str(jar), remote])
+    try:
+        sh(["adb", "-s", serial, "forward", "--remove", f"tcp:{args.port}"])
+    except Exception:
+        pass
     sh(
         [
             "adb",
@@ -152,11 +157,21 @@ def main() -> int:
         f"scid={SCID} log_level=info tunnel_forward=true audio=false video=true control=true "
         f"send_dummy_byte=false max_fps=10 video_bit_rate=8000000 max_size=0 cleanup=true"
     )
+    server_log = tempfile.NamedTemporaryFile(prefix="scrcpy-server-", suffix=".log", delete=False)
+    server_log_path = Path(server_log.name)
     server = subprocess.Popen(
         ["adb", "-s", serial, "shell", server_cmd],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=server_log,
     )
+    server_log.close()
+
+    def server_log_tail(lines: int = 20) -> str:
+        try:
+            text = server_log_path.read_text("utf-8", "replace")
+        except OSError:
+            return ""
+        return "\n".join(text.splitlines()[-lines:])
 
     result: dict[str, object] = {"serial": serial, "scrcpy": version, "server_jar": str(jar)}
     video = None
@@ -178,6 +193,8 @@ def main() -> int:
         while time.time() - start < args.seconds:
             try:
                 pts, size = struct.unpack(">QI", recv_exact(video, PACKET_HEADER_LEN))
+                if size > 16 << 20:
+                    raise RuntimeError(f"异常包长 {size}")
                 payload = recv_exact(video, size)
             except socket.timeout:
                 break  # 静态画面期间编码器不产帧，按已采集的帧结束
@@ -207,20 +224,33 @@ def main() -> int:
         time.sleep(args.press_ms / 1000)
         control.sendall(touch_message(ACTION_UP, x, y, width, height))
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        result.update({"tap_xy": [x, y], "inject_ms": round(elapsed_ms, 1)})
+        result.update({"tap_xy": [x, y], "inject_ms": round(elapsed_ms, 1), "press_ms_target": args.press_ms})
+    except Exception:
+        print(f"server 日志（末 20 行）:\n{server_log_tail()}", file=sys.stderr)
+        raise
     finally:
         for sock in (control, video):
             if sock is not None:
                 sock.close()
         server.terminate()
         try:
+            server.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
+        try:
             sh(["adb", "-s", serial, "forward", "--remove", f"tcp:{args.port}"])
         except Exception:
             pass
+        log_tail = server_log_tail()
+        server_log_path.unlink(missing_ok=True)
 
-    ok = int(result.get("frames", 0)) >= 5 and int(result.get("inject_ms", 0)) >= 0
+    inject_ms = float(result.get("inject_ms", -1))
+    ok = int(result.get("frames", 0)) >= 5 and 0.8 * args.press_ms <= inject_ms <= 3 * args.press_ms
     result["gate"] = "PASS" if ok else "FAIL"
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not ok and log_tail:
+        print(f"server 日志（末 20 行）:\n{log_tail}", file=sys.stderr)
     return 0 if ok else 1
 
 
