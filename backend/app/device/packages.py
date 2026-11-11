@@ -35,6 +35,14 @@ def parse_current_user(output: str) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+def parse_front_component(output: str) -> tuple[str, str] | None:
+    match = ACTIVITY_RE.search(output)
+    if match is None:
+        return None
+    package, activity = match.group(1).split("/", 1)
+    return package, activity
+
+
 def parse_component(output: str) -> tuple[str, str] | None:
     match = ACTIVITY_RE.search(output)
     if match is not None:
@@ -64,8 +72,14 @@ def parse_sdk(output: str) -> int:
     return int(text) if text.isdigit() else 0
 
 
-def resolve_activity(adb: AdbRunner, serial: str, package: str) -> str | None:
-    output = adb.shell(serial, "cmd", "package", "resolve-activity", "--brief", package)
+def resolve_activity(
+    adb: AdbRunner, serial: str, package: str, user: int | None = None
+) -> str | None:
+    args = ["cmd", "package", "resolve-activity", "--brief"]
+    if user is not None:
+        args += ["--user", str(user)]
+    args.append(package)
+    output = adb.shell(serial, *args)
     component = parse_component(output)
     return component[1] if component is not None and component[0] == package else None
 
@@ -77,12 +91,19 @@ def launch_app(
     activity: str | None = None,
     user: int | None = None,
 ) -> tuple[str | None, int | None]:
-    resolved = activity or resolve_activity(adb, serial, package)
+    resolved = activity or resolve_activity(adb, serial, package, user=user)
     args = ["am", "start", "-W"]
     if resolved:
         args += ["-n", f"{package}/{resolved}"]
     else:
-        args += ["-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", package]
+        args += [
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "-p",
+            package,
+        ]
     if user is not None:
         args += ["--user", str(user)]
     output = adb.shell(serial, *args, timeout=30)
@@ -96,7 +117,7 @@ def stop_app(adb: AdbRunner, serial: str, package: str) -> None:
 
 
 def current_component(adb: AdbRunner, serial: str) -> tuple[str, str] | None:
-    return parse_component(adb.shell(serial, "dumpsys", "activity", "activities"))
+    return parse_front_component(adb.shell(serial, "dumpsys", "activity", "activities"))
 
 
 def pid_of(adb: AdbRunner, serial: str, package: str) -> int | None:
@@ -118,7 +139,8 @@ def switch_support(
         return False, "设备仅有一个用户，系统不支持应用分身切换"
     for row in rows:
         installed = adb.shell(serial, "pm", "list", "packages", "--user", str(row.id), package)
-        if package not in installed:
+        installed_lines = {line.strip() for line in installed.splitlines()}
+        if f"package:{package}" not in installed_lines:
             return False, f"用户 {row.id} 未安装 {package}"
     return True, None
 

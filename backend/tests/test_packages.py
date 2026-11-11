@@ -1,13 +1,16 @@
 import pytest
 
 from app.device.packages import (
+    current_component,
     launch_app,
     parse_airplane_mode,
     parse_component,
     parse_current_user,
+    parse_front_component,
     parse_pid,
     parse_sdk,
     parse_users,
+    pid_of,
     read_airplane_mode,
     resolve_activity,
     set_airplane_mode,
@@ -132,6 +135,110 @@ def test_airplane_falls_back_to_settings_before_android_11():
     assert set_airplane_mode(adb, "S", False, sdk=29) == "settings"
     assert ("S", "settings put global airplane_mode_on 0") in adb.calls
     assert any("AIRPLANE_MODE" in call[1] for call in adb.calls)
+
+
+def test_parse_front_component_only_matches_resumed_lines():
+    assert parse_front_component(
+        "  topResumedActivity=ActivityRecord{21ea3 u0 "
+        "com.hb.cncapy.and/com.habby.sdkhubv2.ui.GameStartNativeUIActivty t42}"
+    ) == ("com.hb.cncapy.and", "com.habby.sdkhubv2.ui.GameStartNativeUIActivty")
+    assert (
+        parse_front_component(
+            "  mLastPausedActivity: ActivityRecord{99 u0 com.old/com.old.Main t1}\n"
+            "  * Task{abc #42 type=standard}\n"
+            "    com.history/com.history.Detail\n"
+        )
+        is None
+    )
+
+
+def test_current_component_reads_top_resumed_and_ignores_history():
+    dumpsys = (
+        "  mLastPausedActivity: ActivityRecord{99 u0 com.old/com.old.Main t1}\n"
+        "  topResumedActivity=ActivityRecord{21ea3 u0 "
+        "com.hb.cncapy.and/com.habby.sdkhubv2.ui.GameStartNativeUIActivty t42}\n"
+    )
+    adb = FakeAdb({"dumpsys activity activities": dumpsys})
+    assert current_component(adb, "S") == (
+        "com.hb.cncapy.and",
+        "com.habby.sdkhubv2.ui.GameStartNativeUIActivty",
+    )
+    adb.responses["dumpsys activity activities"] = (
+        "  mLastPausedActivity: ActivityRecord{99 u0 com.old/com.old.Main t1}\n"
+        "    com.history/com.history.Detail\n"
+    )
+    assert current_component(adb, "S") is None
+
+
+def test_pid_of_reads_numeric_pid_and_handles_empty_output():
+    adb = FakeAdb({"pidof com.foo": "4321 4319\n"})
+    assert pid_of(adb, "S", "com.foo") == 4321
+    assert pid_of(adb, "S", "com.missing") is None
+    assert ("S", "pidof com.missing") in adb.calls
+
+
+def test_users_falls_back_to_running_flag_without_numeric_current_user():
+    adb = FakeAdb(
+        {
+            "pm list users": "Users:\n\tUserInfo{0:机主:4c13} running\n\tUserInfo{999:分身:5d20}\n",
+            "am get-current-user": "unknown\n",
+        }
+    )
+    rows = users(adb, "S")
+    assert [(u.id, u.current) for u in rows] == [(0, True), (999, False)]
+
+
+def test_resolve_activity_supports_explicit_user():
+    adb = FakeAdb(
+        {"cmd package resolve-activity --brief --user 999 com.foo": "com.foo/com.foo.Main"}
+    )
+    assert resolve_activity(adb, "S", "com.foo", user=999) == "com.foo.Main"
+    assert ("S", "cmd package resolve-activity --brief --user 999 com.foo") in adb.calls
+
+
+def test_launch_app_resolves_activity_for_requested_user():
+    adb = FakeAdb(
+        {
+            "cmd package resolve-activity --brief --user 999 com.foo": "com.foo/com.foo.Main",
+            "am start -W -n com.foo/com.foo.Main --user 999": "Status: ok\n",
+            "pidof com.foo": "88\n",
+        }
+    )
+    assert launch_app(adb, "S", "com.foo", user=999) == ("com.foo.Main", 88)
+
+
+def test_launch_app_falls_back_to_launcher_intent_with_package():
+    adb = FakeAdb(
+        {
+            "cmd package resolve-activity --brief com.foo": "",
+            "am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p com.foo": (
+                "Status: ok\n"
+            ),
+            "pidof com.foo": "777\n",
+        }
+    )
+    activity, pid = launch_app(adb, "S", "com.foo")
+    assert activity is None
+    assert pid == 777
+    assert (
+        "S",
+        "am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p com.foo",
+    ) in adb.calls
+
+
+def test_switch_support_matches_package_exactly():
+    adb = FakeAdb(
+        {
+            "pm list users": "Users:\n\tUserInfo{0:机主:4c13} running\n\tUserInfo{999:分身:5d20}\n",
+            "am get-current-user": "0\n",
+            "pm list packages --user 0 com.foo": "package:com.foo\n",
+            "pm list packages --user 999 com.foo": "package:com.foobar\n",
+        }
+    )
+    rows = users(adb, "S")
+    supported, reason = switch_support(adb, "S", "com.foo", rows)
+    assert supported is False
+    assert "999" in (reason or "")
 
 
 def test_switch_user_requires_at_least_two_installed_users():
