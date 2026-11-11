@@ -14,6 +14,10 @@ import { SkillPriorityStudio } from './components/SkillPriorityStudio';
 import { AntiBanTelemetry } from './components/AntiBanTelemetry';
 import { FloatingLogger } from './components/FloatingLogger';
 import { DeploymentGuide } from './components/DeploymentGuide';
+import { DeviceBar } from './components/DeviceBar';
+import { DeviceMirror } from './components/DeviceMirror';
+import { DeviceDrawer } from './components/DeviceDrawer';
+import { useDeviceBridge } from './hooks/useDeviceBridge';
 import {
   Cpu,
   Layers,
@@ -32,6 +36,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<
     'simulator' | 'accounts' | 'code' | 'skills' | 'risk' | 'logs' | 'deploy'
   >('simulator');
+
+  const bridge = useDeviceBridge();
 
   const [fsmState, setFsmState] = useState<FsmState>('MAIN_CITY');
   const [isAutoRunning, setIsAutoRunning] = useState<boolean>(false);
@@ -408,6 +414,19 @@ export default function App() {
           </div>
         </div>
 
+        {/* 真机设备栏：模式切换 / 会话状态 / 错误提示 */}
+        <div>
+          <DeviceBar
+            mode={bridge.mode}
+            onModeChange={bridge.switchMode}
+            health={bridge.health}
+            device={bridge.device}
+            session={bridge.session}
+            error={bridge.error}
+            onRefresh={() => bridge.connect()}
+          />
+        </div>
+
         {/* Tab 1: Simulator & FSM View */}
         {activeTab === 'simulator' && (
           <div className="space-y-6">
@@ -419,18 +438,44 @@ export default function App() {
               }}
             />
 
-            <PhoneSimulator
-              fsmState={fsmState}
-              onFsmChange={setFsmState}
-              activeAccount={activeAccount}
-              config={config}
-              onLog={addLog}
-              onRecordTouch={(record) => {
-                // recorded
-              }}
-              isAutoRunning={isAutoRunning}
-              onToggleAutoRun={handleToggleAutoRun}
-            />
+            {bridge.mode === 'real' ? (
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_1fr]">
+                <DeviceMirror
+                  session={bridge.session}
+                  lastTap={bridge.lastTap}
+                  error={bridge.error}
+                  onTap={async (x, y) => {
+                    const result = await bridge.tap(x, y);
+                    if (result) addLog('TOUCH', 'REAL', `真机点击 (${result.realX}, ${result.realY}) via ${result.injectedVia}`);
+                  }}
+                />
+                <DeviceDrawer
+                  packageName={bridge.defaultPackage}
+                  busy={bridge.busy}
+                  users={bridge.users}
+                  ocr={bridge.ocr}
+                  onLaunch={() => bridge.launchGame()}
+                  onStop={() => bridge.stopGame()}
+                  onLoadUsers={() => bridge.loadUsers()}
+                  onSwitchUser={(id) => bridge.switchUser(id)}
+                  onAirplane={(enable) => bridge.toggleAirplane(enable)}
+                  onOcr={() => bridge.runOcr()}
+                  onVerify={() => { addLog('INFO', 'VERIFY', '请在终端执行 npm run verify'); }}
+                  verifyResult={null}
+                />
+              </div>
+            ) : (
+              <PhoneSimulator
+                fsmState={fsmState}
+                onFsmChange={setFsmState}
+                activeAccount={activeAccount}
+                config={config}
+                onLog={addLog}
+                onRecordTouch={() => {}}
+                isAutoRunning={isAutoRunning}
+                onToggleAutoRun={handleToggleAutoRun}
+              />
+            )}
           </div>
         )}
 
