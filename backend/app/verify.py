@@ -25,6 +25,7 @@ STATUS_FAIL = "FAIL"
 STATUS_SKIP = "SKIP"
 
 FRAME_TIMEOUT_S = 30.0
+OCR_TIMEOUT_S = 30.0
 RESTORE_ATTEMPTS = 10
 RESTORE_INTERVAL_S = 0.3
 
@@ -396,9 +397,26 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
     png = await ctx.device.screenshot(session_id)
     screenshot_ms = _elapsed_ms(shot_started)
     path = ctx.save_png("v10", png)
-    await asyncio.to_thread(ocr_png, png)
+    warm_started = time.monotonic()
+    try:
+        await asyncio.wait_for(asyncio.to_thread(ocr_png, png), OCR_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return CheckResult(
+            "V10",
+            STATUS_FAIL,
+            f"OCR 预热超时（>{OCR_TIMEOUT_S:g}s）；screenshotMs={screenshot_ms}；{path}",
+            _elapsed_ms(warm_started),
+        )
     started = time.monotonic()
-    items = await asyncio.to_thread(ocr_png, png)
+    try:
+        items = await asyncio.wait_for(asyncio.to_thread(ocr_png, png), OCR_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return CheckResult(
+            "V10",
+            STATUS_FAIL,
+            f"OCR 识别超时（>{OCR_TIMEOUT_S:g}s）；screenshotMs={screenshot_ms}；{path}",
+            _elapsed_ms(started),
+        )
     ocr_ms = _elapsed_ms(started)
     timing = f"ocrMs={ocr_ms}，screenshotMs={screenshot_ms}"
     if not items:
@@ -463,7 +481,8 @@ async def run_checks(
     activity: str | None,
     out_dir: Path,
     skip: set[str],
-) -> tuple[str, list[CheckResult]]:
+) -> tuple[str, list[CheckResult], bool]:
+    """返回 (实际使用的 serial, 检查结果, 该 serial 是否在线)。"""
     adb = AdbRunner(config.settings.adb_path)
     chosen = _pick_serial(adb, serial)
     online: list[str] = []
@@ -504,7 +523,7 @@ async def run_checks(
             await ctx.close()
         except Exception as exc:  # noqa: BLE001 - 关闭失败不得丢弃已产出的结果
             print(f"关闭会话失败: {type(exc).__name__}: {exc}", file=sys.stderr)
-    return chosen, results
+    return chosen, results, serial_online
 
 
 def write_reports(
@@ -535,12 +554,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     started_at = datetime.now().isoformat(timespec="seconds")
     skip = {item.strip().upper() for item in args.skip.split(",") if item.strip()}
-    serial, results = asyncio.run(
+    serial, results, serial_online = asyncio.run(
         run_checks(args.serial, args.package, args.activity, Path(args.out), skip)
     )
     json_path, md_path = write_reports(results, serial, Path(args.out), started_at)
     print(f"报告：{json_path} / {md_path}")
-    return 0 if serial and summarize(results)["ok"] else 1
+    return 0 if serial_online and summarize(results)["ok"] else 1
 
 
 if __name__ == "__main__":

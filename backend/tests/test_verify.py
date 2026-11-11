@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 from app import verify
@@ -64,8 +65,11 @@ class _NoDeviceAdb:
 
 def test_run_checks_without_device_still_returns_results(tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "AdbRunner", _NoDeviceAdb)
-    serial, results = asyncio.run(verify.run_checks(None, "com.example", None, tmp_path, set()))
+    serial, results, serial_online = asyncio.run(
+        verify.run_checks(None, "com.example", None, tmp_path, set())
+    )
     assert serial == ""
+    assert serial_online is False
     statuses = {result.check_id: result.status for result in results}
     assert statuses["V1"] == "FAIL"
     assert [statuses[f"V{i}"] for i in range(2, 11)] == ["SKIP"] * 9
@@ -109,8 +113,11 @@ class _OtherDeviceAdb(_NoDeviceAdb):
 
 def test_run_checks_with_offline_serial_skips_rest(tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "AdbRunner", _OtherDeviceAdb)
-    serial, results = asyncio.run(verify.run_checks("MISSING", "com.example", None, tmp_path, set()))
+    serial, results, serial_online = asyncio.run(
+        verify.run_checks("MISSING", "com.example", None, tmp_path, set())
+    )
     assert serial == "MISSING"
+    assert serial_online is False
     statuses = {result.check_id: result.status for result in results}
     assert statuses["V1"] == "FAIL"
     assert "MISSING" in results[0].detail
@@ -131,10 +138,24 @@ def test_restore_airplane_reports_readback_mismatch(monkeypatch):
 def test_main_returns_1_without_device_even_when_v1_skipped(tmp_path, monkeypatch):
     async def fake_run_checks(serial, package, activity, out_dir, skip):
         results = [CheckResult(f"V{i}", "SKIP", "无在线设备", 0) for i in range(1, 11)]
-        return "", results
+        return "", results, False
 
     monkeypatch.setattr(verify, "run_checks", fake_run_checks)
     assert verify.main(["--skip", "V1", "--out", str(tmp_path)]) == 1
+
+
+def test_main_returns_1_with_offline_serial_even_when_v1_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify, "AdbRunner", _OtherDeviceAdb)
+    assert verify.main(["--serial", "MISSING", "--skip", "V1", "--out", str(tmp_path)]) == 1
+
+
+def test_main_returns_0_when_online_and_all_pass(tmp_path, monkeypatch):
+    async def fake_run_checks(serial, package, activity, out_dir, skip):
+        results = [CheckResult(f"V{i}", "PASS", "ok", 0) for i in range(1, 11)]
+        return "OTHER", results, True
+
+    monkeypatch.setattr(verify, "run_checks", fake_run_checks)
+    assert verify.main(["--serial", "OTHER", "--out", str(tmp_path)]) == 0
 
 
 async def _resolved(value):
@@ -156,3 +177,85 @@ def test_v3_hard_timeout_fails_when_frames_insufficient(monkeypatch):
     result = asyncio.run(verify.check_v3(ctx))
     assert result.status == "FAIL"
     assert "仅收到 2 帧" in result.detail
+
+
+async def _no_sleep(seconds):
+    return None
+
+
+def _v10_ctx(png: bytes, tmp_path):
+    return SimpleNamespace(
+        package="com.example",
+        session=lambda: _resolved("sid"),
+        device=SimpleNamespace(screenshot=lambda session_id: _resolved(png)),
+        launch=lambda: ("com.example/.Main", 1),
+        save_png=lambda check_id, data: str(tmp_path / f"{check_id}.png"),
+    )
+
+
+def test_v10_warmup_ocr_not_counted_in_timing(monkeypatch, tmp_path):
+    png = b"\x89PNG v10"
+    calls = []
+
+    def fake_ocr(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            time.sleep(0.3)
+            return []
+        return [SimpleNamespace(text="开始游戏", confidence=0.92)]
+
+    monkeypatch.setattr(verify, "engine_available", lambda: True)
+    monkeypatch.setattr(verify, "ocr_png", fake_ocr)
+    monkeypatch.setattr(verify.asyncio, "sleep", _no_sleep)
+
+    result = asyncio.run(verify.check_v10(_v10_ctx(png, tmp_path)))
+
+    assert len(calls) == 2
+    assert calls[0] == png
+    assert calls[1] == png
+    assert result.status == "PASS"
+    # 预热那一次睡了 0.3s，若被计入 elapsed_ms 就不可能小于 150
+    assert result.elapsed_ms < 150
+    assert "ocrMs=" in result.detail
+
+
+def test_v10_warmup_ocr_timeout_fails_without_timing(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_ocr(payload):
+        calls.append(payload)
+        time.sleep(0.3)
+        return []
+
+    monkeypatch.setattr(verify, "engine_available", lambda: True)
+    monkeypatch.setattr(verify, "ocr_png", fake_ocr)
+    monkeypatch.setattr(verify, "OCR_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(verify.asyncio, "sleep", _no_sleep)
+
+    result = asyncio.run(verify.check_v10(_v10_ctx(b"\x89PNG v10", tmp_path)))
+
+    assert len(calls) == 1
+    assert result.status == "FAIL"
+    assert "预热超时" in result.detail
+
+
+def test_v10_timed_ocr_timeout_fails(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_ocr(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return []
+        time.sleep(0.3)
+        return []
+
+    monkeypatch.setattr(verify, "engine_available", lambda: True)
+    monkeypatch.setattr(verify, "ocr_png", fake_ocr)
+    monkeypatch.setattr(verify, "OCR_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(verify.asyncio, "sleep", _no_sleep)
+
+    result = asyncio.run(verify.check_v10(_v10_ctx(b"\x89PNG v10", tmp_path)))
+
+    assert len(calls) == 2
+    assert result.status == "FAIL"
+    assert "识别超时" in result.detail
