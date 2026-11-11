@@ -71,23 +71,22 @@ def ocr_image(image: Image.Image, engine=None, region=None) -> list[OcrItem]:
         image = image.crop((offset_x, offset_y, crop_right, crop_bottom))
     array = np.array(image.convert("RGB"))
     result, _elapse = (engine or get_engine())(array)
-    items = normalize_result(result, image.size[0], image.size[1])
-    if offset_x == 0 and offset_y == 0:
-        return items
+    crop_width, crop_height = image.size
     return [
         OcrItem(
             text=item.text,
             confidence=item.confidence,
             bounds=(
-                (item.bounds[0] * image.size[0] + offset_x) / width,
-                (item.bounds[1] * image.size[1] + offset_y) / height,
-                (item.bounds[2] * image.size[0] + offset_x) / width,
-                (item.bounds[3] * image.size[1] + offset_y) / height,
+                (item.bounds[0] * crop_width + offset_x) / width,
+                (item.bounds[1] * crop_height + offset_y) / height,
+                (item.bounds[2] * crop_width + offset_x) / width,
+                (item.bounds[3] * crop_height + offset_y) / height,
             ),
         )
-        for item in items
+        for item in normalize_result(result, crop_width, crop_height)
     ]
 
 
 def ocr_png(png: bytes, region=None) -> list[OcrItem]:
-    return ocr_image(Image.open(io.BytesIO(png)), region=region)
+    with Image.open(io.BytesIO(png)) as image:
+        return ocr_image(image, region=region)

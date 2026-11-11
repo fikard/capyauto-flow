@@ -1,3 +1,5 @@
+import pytest
+
 import app.api.vision as vision_api
 
 
@@ -39,3 +41,18 @@ def test_ocr_unavailable_returns_503(client, monkeypatch):
     response = client.post("/api/vision/ocr", json={"sessionId": session_id})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "OCR_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "region",
+    [
+        [0.5, 0.5, 0.1, 0.9],
+        [0, 0, 1.2, 1],
+        [0.5, 0, 0.5, 1],
+    ],
+)
+def test_ocr_invalid_region_returns_422(client, monkeypatch, region):
+    monkeypatch.setattr(vision_api, "engine_available", lambda: True)
+    session_id = _session(client)
+    response = client.post("/api/vision/ocr", json={"sessionId": session_id, "region": region})
+    assert response.status_code == 422

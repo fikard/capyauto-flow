@@ -28,6 +28,24 @@ def test_ocr_image_crops_region_and_keeps_full_image_coordinates():
     assert items[0].bounds == (0.55, 0.525, 0.75, 0.575)
 
 
+def test_ocr_image_region_at_origin_keeps_full_image_coordinates():
+    def fake_engine(_array):
+        return ([(_box(10, 10, 40, 90), "宝箱", 0.9)], None)
+
+    image = Image.new("RGB", (100, 200), (0, 0, 0))
+    items = ocr_image(image, engine=fake_engine, region=(0.0, 0.0, 0.5, 0.5))
+    assert items[0].bounds == (0.1, 0.05, 0.4, 0.45)
+
+
+def test_ocr_image_without_region_maps_to_full_image_coordinates():
+    def fake_engine(_array):
+        return ([(_box(10, 20, 50, 40), "冰刺", 0.88)], None)
+
+    image = Image.new("RGB", (100, 200), (0, 0, 0))
+    items = ocr_image(image, engine=fake_engine)
+    assert items[0].bounds == (0.1, 0.1, 0.5, 0.2)
+
+
 def test_ocr_image_empty_result_returns_empty_list():
     image = Image.new("RGB", (10, 10))
     assert ocr_image(image, engine=lambda _: (None, None)) == []
