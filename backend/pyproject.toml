@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.9",
     "av>=13.0",
     "pillow>=10.4",
+    "rapidocr-onnxruntime>=1.4",
 ]
 
 [project.optional-dependencies]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -51,3 +51,18 @@ class SwitchUserRequest(BaseModel):
 class AirplaneRequest(BaseModel):
     sessionId: str
     enable: bool
+
+
+class OcrRequest(BaseModel):
+    sessionId: str
+    region: tuple[float, float, float, float] | None = None
+
+    @field_validator("region")
+    @classmethod
+    def _check_region(cls, value):
+        if value is None:
+            return value
+        left, top, right, bottom = value
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            raise ValueError("region 需为 [left, top, right, bottom]，且 0<=left<right<=1、0<=top<bottom<=1")
+        return value

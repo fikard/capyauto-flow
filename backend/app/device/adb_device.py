@@ -40,6 +40,7 @@ from app.errors import (
     SessionNotFound,
     UserSwitchFailed,
 )
+from app.vision.ocr import engine_name
 
 log = logging.getLogger("capyauto.adb")
 
@@ -117,7 +118,7 @@ class AdbScrcpyDevice(DeviceAdapter):
             "device_backend": self.name,
             "adb_version": None,
             "scrcpy_version": None,
-            "ocr_engine": None,
+            "ocr_engine": engine_name(),
             "hint": None,
         }
         try:

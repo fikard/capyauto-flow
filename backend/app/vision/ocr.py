@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import threading
+from dataclasses import dataclass
+
+from PIL import Image
+
+_engine = None
+_engine_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class OcrItem:
+    text: str
+    confidence: float
+    bounds: tuple[float, float, float, float]
+
+
+def engine_available() -> bool:
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+
+
+def engine_name() -> str | None:
+    return "rapidocr-onnxruntime" if engine_available() else None
+
+
+def get_engine():
+    global _engine
+    with _engine_lock:
+        if _engine is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _engine = RapidOCR()
+    return _engine
+
+
+def normalize_result(raw, width: int, height: int) -> list[OcrItem]:
+    items: list[OcrItem] = []
+    for entry in raw or []:
+        box, text, score = entry
+        xs = [float(point[0]) for point in box]
+        ys = [float(point[1]) for point in box]
+        items.append(
+            OcrItem(
+                text=str(text),
+                confidence=float(score),
+                bounds=(
+                    min(xs) / width,
+                    min(ys) / height,
+                    max(xs) / width,
+                    max(ys) / height,
+                ),
+            )
+        )
+    return items
+
+
+def ocr_image(image: Image.Image, engine=None, region=None) -> list[OcrItem]:
+    import numpy as np
+
+    width, height = image.size
+    offset_x = offset_y = 0
+    if region is not None:
+        left, top, right, bottom = region
+        offset_x = int(round(max(0.0, left) * width))
+        offset_y = int(round(max(0.0, top) * height))
+        crop_right = int(round(min(1.0, right) * width))
+        crop_bottom = int(round(min(1.0, bottom) * height))
+        image = image.crop((offset_x, offset_y, crop_right, crop_bottom))
+    array = np.array(image.convert("RGB"))
+    result, _elapse = (engine or get_engine())(array)
+    items = normalize_result(result, image.size[0], image.size[1])
+    if offset_x == 0 and offset_y == 0:
+        return items
+    return [
+        OcrItem(
+            text=item.text,
+            confidence=item.confidence,
+            bounds=(
+                (item.bounds[0] * image.size[0] + offset_x) / width,
+                (item.bounds[1] * image.size[1] + offset_y) / height,
+                (item.bounds[2] * image.size[0] + offset_x) / width,
+                (item.bounds[3] * image.size[1] + offset_y) / height,
+            ),
+        )
+        for item in items
+    ]
+
+
+def ocr_png(png: bytes, region=None) -> list[OcrItem]:
+    return ocr_image(Image.open(io.BytesIO(png)), region=region)

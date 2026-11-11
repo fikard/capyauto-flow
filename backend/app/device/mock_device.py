@@ -23,6 +23,7 @@ from app.device.base import (
     keycode_for,
 )
 from app.errors import DeviceNotFound, SessionNotFound
+from app.vision.ocr import engine_name
 
 
 class MockDevice(DeviceAdapter):
@@ -47,7 +48,7 @@ class MockDevice(DeviceAdapter):
             "device_backend": self.name,
             "adb_version": None,
             "scrcpy_version": None,
-            "ocr_engine": None,
+            "ocr_engine": engine_name(),
             "hint": "当前为 Mock 后端，不连接真机",
         }
 
