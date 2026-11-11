@@ -27,6 +27,7 @@ def build_adapter(cfg: config.Settings | None = None) -> DeviceAdapter:
             display_width=cfg.display_width,
             frame_timeout=cfg.frame_timeout,
             allow_fallback=cfg.allow_screencap_fallback,
+            game_package=cfg.game_package,
         )
     raise SystemExit(f"未知 CAPYAUTO_DEVICE_BACKEND={cfg.device_backend}，可选 mock|adb")
 

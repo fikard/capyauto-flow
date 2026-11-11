@@ -12,25 +12,33 @@ from pathlib import Path
 
 from app.core.dither import bezier_points, gaussian_click
 from app.core.geometry import normalize_to_device
+from app.device import packages
 from app.device.adb import AdbRunner
 from app.device.base import (
+    AirplaneResult,
+    AppStatus,
     DeviceAdapter,
     DeviceInfo,
     Frame,
     MirrorSession,
     SwipeResult,
     TapResult,
+    UserListResult,
+    UserSwitchResult,
     keycode_for,
 )
 from app.device.scrcpy_session import ScrcpySession
 from app.device.screen import ScreencapPoller
 from app.errors import (
+    AdbError,
+    AirplaneModeFailed,
     ApiError,
     DeviceNotFound,
     DeviceUnauthorized,
     MirrorLost,
     ScrcpyUnavailable,
     SessionNotFound,
+    UserSwitchFailed,
 )
 
 log = logging.getLogger("capyauto.adb")
@@ -73,6 +81,7 @@ class AdbScrcpyDevice(DeviceAdapter):
         display_width: int,
         frame_timeout: float,
         allow_fallback: bool,
+        game_package: str = "",
     ) -> None:
         self._adb = adb
         self._server_bin = server_bin
@@ -85,6 +94,7 @@ class AdbScrcpyDevice(DeviceAdapter):
         self._display_width = display_width
         self._frame_timeout = frame_timeout
         self._allow_fallback = allow_fallback
+        self.game_package = game_package
         self._sessions: dict[str, MirrorSession] = {}
         self._scrcpy: dict[str, ScrcpySession] = {}
         self._pollers: dict[str, ScreencapPoller] = {}
@@ -441,3 +451,78 @@ class AdbScrcpyDevice(DeviceAdapter):
     async def screenshot(self, session_id: str) -> bytes:
         session = self.get_session(session_id)
         return await asyncio.to_thread(self._adb.exec_out, session.serial, "screencap", "-p")
+
+    # ---------- 应用 / 用户 / 网络 ----------
+
+    def _launch_sync(self, session_id: str, package: str, user: int | None) -> AppStatus:
+        session = self.get_session(session_id)
+        activity, pid = packages.launch_app(self._adb, session.serial, package, user=user)
+        return AppStatus(
+            package=package, activity=activity, running=pid is not None, pid=pid, user=user
+        )
+
+    async def launch_app(
+        self, session_id: str, package: str, user: int | None = None
+    ) -> AppStatus:
+        return await asyncio.to_thread(self._launch_sync, session_id, package, user)
+
+    def _stop_sync(self, session_id: str, package: str) -> None:
+        session = self.get_session(session_id)
+        packages.stop_app(self._adb, session.serial, package)
+
+    async def stop_app(self, session_id: str, package: str) -> None:
+        await asyncio.to_thread(self._stop_sync, session_id, package)
+
+    def _current_sync(self, session_id: str) -> AppStatus:
+        session = self.get_session(session_id)
+        component = packages.current_component(self._adb, session.serial)
+        package = component[0] if component else ""
+        pid = packages.pid_of(self._adb, session.serial, package) if package else None
+        return AppStatus(
+            package=package,
+            activity=component[1] if component else None,
+            running=pid is not None,
+            pid=pid,
+        )
+
+    async def current_app(self, session_id: str) -> AppStatus:
+        return await asyncio.to_thread(self._current_sync, session_id)
+
+    def _users_sync(self, session_id: str) -> UserListResult:
+        session = self.get_session(session_id)
+        rows = packages.users(self._adb, session.serial)
+        supported, reason = packages.switch_support(
+            self._adb, session.serial, self.game_package, rows
+        )
+        return UserListResult(users=rows, switch_supported=supported, reason=reason)
+
+    async def list_users(self, session_id: str) -> UserListResult:
+        return await asyncio.to_thread(self._users_sync, session_id)
+
+    def _switch_sync(self, session_id: str, user_id: int) -> UserSwitchResult:
+        result = self._users_sync(session_id)
+        if not result.switch_supported:
+            return UserSwitchResult(
+                ok=False, user_id=user_id, switch_supported=False, reason=result.reason
+            )
+        session = self.get_session(session_id)
+        try:
+            packages.switch_user(self._adb, session.serial, user_id)
+        except ApiError as exc:
+            raise UserSwitchFailed(exc.message) from exc
+        return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)
+
+    async def switch_user(self, session_id: str, user_id: int) -> UserSwitchResult:
+        return await asyncio.to_thread(self._switch_sync, session_id, user_id)
+
+    def _airplane_sync(self, session_id: str, enable: bool) -> AirplaneResult:
+        session = self.get_session(session_id)
+        sdk = packages.parse_sdk(self._adb.getprop(session.serial, "ro.build.version.sdk"))
+        via = packages.set_airplane_mode(self._adb, session.serial, enable, sdk)
+        actual = packages.read_airplane_mode(self._adb, session.serial)
+        if actual != enable:
+            raise AirplaneModeFailed(f"飞行模式读回不一致：期望 {enable}，实际 {actual}")
+        return AirplaneResult(ok=True, airplane_mode_on=actual, applied_via=via)
+
+    async def set_airplane_mode(self, session_id: str, enable: bool) -> AirplaneResult:
+        return await asyncio.to_thread(self._airplane_sync, session_id, enable)

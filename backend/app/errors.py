@@ -85,3 +85,18 @@ class MirrorLost(ApiError):
 class InjectionFailed(ApiError):
     status_code = 502
     code = "INJECTION_FAILED"
+
+
+class AirplaneModeFailed(AdbError):
+    status_code = 502
+    code = "AIRPLANE_MODE_FAILED"
+
+
+class UserSwitchFailed(AdbError):
+    status_code = 502
+    code = "USER_SWITCH_FAILED"
+
+
+class OcrUnavailable(ApiError):
+    status_code = 503
+    code = "OCR_UNAVAILABLE"

@@ -9,12 +9,17 @@ from PIL import Image, ImageDraw
 from app.core.dither import bezier_points, gaussian_click
 from app.core.geometry import normalize_to_device
 from app.device.base import (
+    AirplaneResult,
+    AndroidUser,
+    AppStatus,
     DeviceAdapter,
     DeviceInfo,
     Frame,
     MirrorSession,
     SwipeResult,
     TapResult,
+    UserListResult,
+    UserSwitchResult,
     keycode_for,
 )
 from app.errors import DeviceNotFound, SessionNotFound
@@ -32,6 +37,9 @@ class MockDevice(DeviceAdapter):
         self._seq = 0
         self._last_tap: tuple[int, int] | None = None
         self._keys: list[str] = []
+        self._app = AppStatus(package="", activity=None, running=False, pid=None)
+        self._current_user = 0
+        self._airplane = False
 
     async def health(self) -> dict:
         return {
@@ -149,6 +157,46 @@ class MockDevice(DeviceAdapter):
         buffer = io.BytesIO()
         image.save(buffer, "PNG")
         return buffer.getvalue()
+
+    async def launch_app(
+        self, session_id: str, package: str, user: int | None = None
+    ) -> AppStatus:
+        self.get_session(session_id)
+        self._app = AppStatus(
+            package=package, activity="mock.MainActivity", running=True, pid=4242, user=user
+        )
+        return self._app
+
+    async def stop_app(self, session_id: str, package: str) -> None:
+        self.get_session(session_id)
+        if self._app.package == package:
+            self._app = AppStatus(package=package, running=False)
+
+    async def current_app(self, session_id: str) -> AppStatus:
+        self.get_session(session_id)
+        return self._app
+
+    async def list_users(self, session_id: str) -> UserListResult:
+        self.get_session(session_id)
+        rows = [
+            AndroidUser(id=0, name="机主", current=self._current_user == 0),
+            AndroidUser(id=999, name="分身", current=self._current_user == 999),
+        ]
+        return UserListResult(users=rows, switch_supported=True)
+
+    async def switch_user(self, session_id: str, user_id: int) -> UserSwitchResult:
+        self.get_session(session_id)
+        if user_id not in (0, 999):
+            return UserSwitchResult(
+                ok=False, user_id=user_id, switch_supported=False, reason="未知用户"
+            )
+        self._current_user = user_id
+        return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)
+
+    async def set_airplane_mode(self, session_id: str, enable: bool) -> AirplaneResult:
+        self.get_session(session_id)
+        self._airplane = enable
+        return AirplaneResult(ok=True, airplane_mode_on=enable, applied_via="mock")
 
     def _render(self, seq: int) -> bytes:
         width, height = self._width // 4, self._height // 4

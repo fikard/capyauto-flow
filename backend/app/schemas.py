@@ -30,3 +30,24 @@ class SwipeRequest(BaseModel):
 class KeyRequest(BaseModel):
     sessionId: str
     key: str
+
+
+class LaunchAppRequest(BaseModel):
+    sessionId: str
+    package: str = Field(min_length=1, max_length=200)
+    user: int | None = Field(default=None, ge=0)
+
+
+class StopAppRequest(BaseModel):
+    sessionId: str
+    package: str = Field(min_length=1, max_length=200)
+
+
+class SwitchUserRequest(BaseModel):
+    sessionId: str
+    userId: int = Field(ge=0)
+
+
+class AirplaneRequest(BaseModel):
+    sessionId: str
+    enable: bool

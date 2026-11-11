@@ -86,6 +86,15 @@ class Settings:
     allow_screencap_fallback: bool = field(
         default_factory=lambda: _env_bool("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", True)
     )
+    game_package: str = field(
+        default_factory=lambda: os.environ.get("CAPYAUTO_GAME_PACKAGE", "com.hb.cncapy.and")
+    )
+    game_activity: str | None = field(
+        default_factory=lambda: os.environ.get(
+            "CAPYAUTO_GAME_ACTIVITY", "com.habby.sdkhubv2.ui.GameStartNativeUIActivty"
+        )
+        or None
+    )
 
 
 settings = Settings()

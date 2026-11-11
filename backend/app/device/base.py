@@ -64,6 +64,37 @@ class SwipeResult:
     injected_via: str
 
 
+@dataclass
+class AppStatus:
+    package: str
+    activity: str | None = None
+    running: bool = False
+    pid: int | None = None
+    user: int | None = None
+
+
+@dataclass
+class UserListResult:
+    users: list[AndroidUser]
+    switch_supported: bool
+    reason: str | None = None
+
+
+@dataclass
+class UserSwitchResult:
+    ok: bool
+    user_id: int
+    switch_supported: bool
+    reason: str | None = None
+
+
+@dataclass
+class AirplaneResult:
+    ok: bool
+    airplane_mode_on: bool
+    applied_via: str
+
+
 class DeviceAdapter(ABC):
     name: str = "base"
 
@@ -121,6 +152,32 @@ class DeviceAdapter(ABC):
 
     @abstractmethod
     async def screenshot(self, session_id: str) -> bytes:
+        ...
+
+    @abstractmethod
+    async def launch_app(
+        self, session_id: str, package: str, user: int | None = None
+    ) -> AppStatus:
+        ...
+
+    @abstractmethod
+    async def stop_app(self, session_id: str, package: str) -> None:
+        ...
+
+    @abstractmethod
+    async def current_app(self, session_id: str) -> AppStatus:
+        ...
+
+    @abstractmethod
+    async def list_users(self, session_id: str) -> UserListResult:
+        ...
+
+    @abstractmethod
+    async def switch_user(self, session_id: str, user_id: int) -> UserSwitchResult:
+        ...
+
+    @abstractmethod
+    async def set_airplane_mode(self, session_id: str, enable: bool) -> AirplaneResult:
         ...
 
 
