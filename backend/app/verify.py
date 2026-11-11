@@ -137,12 +137,6 @@ def _component_text(component: tuple[str, str] | None) -> str:
     return "/".join(component) if component is not None else "未知"
 
 
-def _dummy_png() -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", (16, 16), (255, 255, 255)).save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
 def _restore_airplane(ctx: VerifyContext, original: bool) -> str:
     try:
         if packages.read_airplane_mode(ctx.adb, ctx.serial) != original:
@@ -152,8 +146,11 @@ def _restore_airplane(ctx: VerifyContext, original: bool) -> str:
                 original,
                 packages.parse_sdk(ctx.adb.getprop(ctx.serial, "ro.build.version.sdk")),
             )
+        actual = packages.read_airplane_mode(ctx.adb, ctx.serial)
     except Exception as exc:  # noqa: BLE001 - 恢复失败只记录，不掩盖主结果
         return f"恢复失败: {type(exc).__name__}: {exc}"
+    if actual != original:
+        return f"恢复失败: 读回 {actual}"
     return ""
 
 
@@ -393,12 +390,13 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
     session_id = await ctx.session()
     await asyncio.to_thread(ctx.launch)
     await asyncio.sleep(2.0)
-    # ONNX 首次推理是秒级冷启动：截图与 dummy OCR 都放在计时外，只统计单次识别耗时
-    await asyncio.to_thread(ocr_png, _dummy_png())
+    # ONNX 首次推理是秒级冷启动：先用同一张真实 PNG 不计时跑一次，
+    # 让 det/rec/cls 与分辨率相关的首次分配都在计时外，只统计第二次识别耗时
     shot_started = time.monotonic()
     png = await ctx.device.screenshot(session_id)
     screenshot_ms = _elapsed_ms(shot_started)
     path = ctx.save_png("v10", png)
+    await asyncio.to_thread(ocr_png, png)
     started = time.monotonic()
     items = await asyncio.to_thread(ocr_png, png)
     ocr_ms = _elapsed_ms(started)
@@ -429,16 +427,34 @@ CHECKS = {
 }
 
 
+def is_serial_online(chosen: str | None, online_serials: list[str] | tuple[str, ...]) -> bool:
+    return bool(chosen) and chosen in set(online_serials)
+
+
 def _pick_serial(adb: AdbRunner, requested: str | None) -> str:
     if requested:
         return requested
     try:
         devices = adb.devices()
-    except ApiError:
-        # adb 不可用也照常出报告，具体错误由 V1 记录
+    except Exception:  # noqa: BLE001 - adb 不可用也照常出报告，具体错误由 V1 记录
         return ""
     online = [device.serial for device in devices if device.state == "device"]
     return online[0] if online else ""
+
+
+def _offline_result(
+    check_id: str, chosen: str, online: list[str], probe_error: str | None
+) -> CheckResult:
+    if check_id != "V1":
+        reason = "所选设备不在线" if online else "无在线设备"
+        return CheckResult(check_id, STATUS_SKIP, reason, 0)
+    if probe_error:
+        return CheckResult("V1", STATUS_FAIL, f"adb 不可用: {probe_error}", 0)
+    if not online:
+        return CheckResult("V1", STATUS_FAIL, "adb devices 中没有 state=device 的设备", 0)
+    return CheckResult(
+        "V1", STATUS_FAIL, f"所选设备 {chosen or '未指定'} 不在线（在线: {', '.join(online)}）", 0
+    )
 
 
 async def run_checks(
@@ -450,6 +466,13 @@ async def run_checks(
 ) -> tuple[str, list[CheckResult]]:
     adb = AdbRunner(config.settings.adb_path)
     chosen = _pick_serial(adb, serial)
+    online: list[str] = []
+    probe_error: str | None = None
+    try:
+        online = [device.serial for device in adb.devices() if device.state == "device"]
+    except Exception as exc:  # noqa: BLE001 - adb 不可用时仍要出报告
+        probe_error = f"{type(exc).__name__}: {exc}"
+    serial_online = is_serial_online(chosen, online)
     ctx = VerifyContext(chosen, package, activity, out_dir)
     results: list[CheckResult] = []
     try:
@@ -458,9 +481,10 @@ async def run_checks(
                 results.append(CheckResult(check_id, STATUS_SKIP, "命令行指定跳过", 0))
                 print(f"[{STATUS_SKIP}] {check_id} 命令行指定跳过")
                 continue
-            if not chosen and check_id != "V1":
-                results.append(CheckResult(check_id, STATUS_SKIP, "无在线设备", 0))
-                print(f"[{STATUS_SKIP}] {check_id} 无在线设备")
+            if not serial_online:
+                result = _offline_result(check_id, chosen, online, probe_error)
+                results.append(result)
+                print(f"[{result.status}] {check_id} {result.detail}")
                 continue
             started = time.monotonic()
             try:
@@ -516,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     json_path, md_path = write_reports(results, serial, Path(args.out), started_at)
     print(f"报告：{json_path} / {md_path}")
-    return 0 if summarize(results)["ok"] else 1
+    return 0 if serial and summarize(results)["ok"] else 1
 
 
 if __name__ == "__main__":

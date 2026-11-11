@@ -92,6 +92,51 @@ def test_v1_fails_with_adb_error_message():
     assert "未找到 adb" in result.detail
 
 
+def test_is_serial_online_handles_empty_offline_and_online():
+    assert verify.is_serial_online("", ["S"]) is False
+    assert verify.is_serial_online(None, ["S"]) is False
+    assert verify.is_serial_online("MISSING", ["S"]) is False
+    assert verify.is_serial_online("S", ["S", "T"]) is True
+
+
+class _OtherDeviceAdb(_NoDeviceAdb):
+    def devices(self):
+        return [SimpleNamespace(serial="OTHER", state="device")]
+
+    def version(self):
+        return "adb 1.0"
+
+
+def test_run_checks_with_offline_serial_skips_rest(tmp_path, monkeypatch):
+    monkeypatch.setattr(verify, "AdbRunner", _OtherDeviceAdb)
+    serial, results = asyncio.run(verify.run_checks("MISSING", "com.example", None, tmp_path, set()))
+    assert serial == "MISSING"
+    statuses = {result.check_id: result.status for result in results}
+    assert statuses["V1"] == "FAIL"
+    assert "MISSING" in results[0].detail
+    assert "OTHER" in results[0].detail
+    assert [statuses[f"V{i}"] for i in range(2, 11)] == ["SKIP"] * 9
+    assert all(result.detail == "所选设备不在线" for result in results[1:])
+
+
+def test_restore_airplane_reports_readback_mismatch(monkeypatch):
+    ctx = SimpleNamespace(
+        serial="S", adb=SimpleNamespace(getprop=lambda *args: "30")
+    )
+    monkeypatch.setattr(verify.packages, "read_airplane_mode", lambda adb, serial: True)
+    monkeypatch.setattr(verify.packages, "set_airplane_mode", lambda *args, **kwargs: "")
+    assert verify._restore_airplane(ctx, False) == "恢复失败: 读回 True"
+
+
+def test_main_returns_1_without_device_even_when_v1_skipped(tmp_path, monkeypatch):
+    async def fake_run_checks(serial, package, activity, out_dir, skip):
+        results = [CheckResult(f"V{i}", "SKIP", "无在线设备", 0) for i in range(1, 11)]
+        return "", results
+
+    monkeypatch.setattr(verify, "run_checks", fake_run_checks)
+    assert verify.main(["--skip", "V1", "--out", str(tmp_path)]) == 1
+
+
 async def _resolved(value):
     return value
 
