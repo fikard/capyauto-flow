@@ -23,10 +23,15 @@ export class DeviceApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BACKEND_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${BACKEND_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    });
+  } catch {
+    throw new DeviceApiError('BACKEND_UNREACHABLE', `无法连接后端 ${BACKEND_URL}，请确认服务已启动`);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = payload?.error ?? {};

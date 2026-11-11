@@ -411,6 +411,15 @@ export default function App() {
             >
               部署手册
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('logs')}
+              className={`px-2.5 py-1 text-xs rounded font-medium whitespace-nowrap cursor-pointer ${
+                activeTab === 'logs' ? 'bg-amber-500 text-slate-950 font-bold' : 'text-slate-400'
+              }`}
+            >
+              控制台日志
+            </button>
           </div>
         </div>
 

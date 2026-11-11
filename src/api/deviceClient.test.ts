@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMirrorUrl, isTapInside, toNormalized } from './deviceClient';
+import { DeviceApiError, buildMirrorUrl, deviceClient, isTapInside, toNormalized } from './deviceClient';
 
 test('buildMirrorUrl converts http base to ws and keeps query', () => {
   assert.equal(
@@ -24,4 +24,18 @@ test('isTapInside only accepts the unit square', () => {
   assert.equal(isTapInside(-0.01, 0.5), false);
   assert.equal(isTapInside(1.01, 0.5), false);
   assert.equal(isTapInside(Number.NaN, 0.5), false);
+});
+
+test('network failure surfaces BACKEND_UNREACHABLE instead of raw TypeError', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch;
+  try {
+    await assert.rejects(deviceClient.health(), (exc: unknown) => {
+      assert.ok(exc instanceof DeviceApiError);
+      assert.equal(exc.code, 'BACKEND_UNREACHABLE');
+      return true;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
