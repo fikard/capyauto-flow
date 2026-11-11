@@ -84,11 +84,15 @@ class AdbRunner:
             raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
         except subprocess.TimeoutExpired as exc:
             raise AdbTimeout(f"adb 超时（{effective_timeout}s）: {' '.join(argv)}") from exc
-        if code != 0 and check:
-            raise AdbError(
-                f"adb 命令失败（{code}）: {' '.join(argv)}",
-                detail={"stderr": err.decode("utf-8", "replace")[:500]},
-            )
+        if code != 0:
+            stderr_text = err.decode("utf-8", "replace")
+            # check=False 只容忍「命令以退出码表达结果」且没有任何错误输出（如 pidof 未找到进程）；
+            # adb 自身故障（offline/未授权）会写 stderr，必须继续抛出，避免被误判成业务结果。
+            if check or stderr_text.strip():
+                raise AdbError(
+                    f"adb 命令失败（{code}）: {' '.join(argv)}",
+                    detail={"stderr": stderr_text[:500]},
+                )
         return out if binary else out.decode("utf-8", "replace").strip()
 
     def version(self) -> str:

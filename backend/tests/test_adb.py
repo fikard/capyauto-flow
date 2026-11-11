@@ -66,6 +66,13 @@ def test_check_false_returns_empty_output_on_nonzero_exit():
     assert runner.run("shell", "pidof", "com.foo", serial="S", check=False) == ""
 
 
+def test_check_false_still_raises_when_stderr_reports_adb_failure():
+    # check=False 不能把 device offline 之类的 adb 故障吞成「命令无输出」
+    runner = AdbRunner(exec_fn=fake_exec(returncode=1, stderr=b"error: device offline"))
+    with pytest.raises(AdbError):
+        runner.run("shell", "pidof", "com.foo", serial="S", check=False)
+
+
 def test_timeout_raises_adb_timeout():
     runner = AdbRunner(exec_fn=fake_exec(raise_exc=subprocess.TimeoutExpired("adb", 10)))
     with pytest.raises(AdbTimeout) as exc:

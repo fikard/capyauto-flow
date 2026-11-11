@@ -43,7 +43,7 @@ SERVER_VERSION_RE = re.compile(r"^\d+(\.\d+){1,2}$")
 
 # 设备端 max_fps 已把帧率限制在目标值附近，客户端再严格按 1/fps 丢帧会因抖动
 # 把略早到达的帧丢掉、再等下一个周期，实测 P95 间隔接近 2 倍目标间隔（5fps → 约 400ms）。
-# 留 20% 容差，既避免重复限制，也不会让帧率明显超过目标。
+# 留 20% 容差后客户端最多放行到 1.25×fps，实际帧率仍由设备端 max_fps 兜底。
 FPS_THROTTLE_TOLERANCE = 0.8
 
 ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2

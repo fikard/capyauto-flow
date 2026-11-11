@@ -25,7 +25,7 @@ def _env_int(name: str, default: int, *, lo: int | None = None, hi: int | None =
     return value
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(name: str, default: float, *, hi: float | None = None) -> float:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return default
@@ -35,6 +35,7 @@ def _env_float(name: str, default: float) -> float:
         raise SystemExit(f"环境变量 {name} 必须是数字，实际为 {raw!r}") from exc
     if value <= 0:
         raise SystemExit(f"环境变量 {name} 必须大于 0，实际为 {raw!r}")
+    _check_range(name, value, None, hi)
     return value
 
 
@@ -83,7 +84,9 @@ class Settings:
     jpeg_quality: int = field(default_factory=lambda: _env_int("CAPYAUTO_JPEG_QUALITY", 70, lo=1, hi=100))
     scrcpy_bitrate: int = field(default_factory=lambda: _env_int("CAPYAUTO_SCRCPY_BITRATE", 8_000_000, lo=1))
     frame_timeout: float = field(default_factory=lambda: _env_float("CAPYAUTO_FRAME_TIMEOUT", 10.0))
-    ocr_max_ms: float = field(default_factory=lambda: _env_float("CAPYAUTO_OCR_MAX_MS", 5000.0))
+    ocr_max_ms: float = field(
+        default_factory=lambda: _env_float("CAPYAUTO_OCR_MAX_MS", 5000.0, hi=30_000)
+    )
     allow_screencap_fallback: bool = field(
         default_factory=lambda: _env_bool("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", True)
     )

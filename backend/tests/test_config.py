@@ -75,6 +75,12 @@ def test_ocr_max_ms_defaults_and_override(monkeypatch):
     assert Settings().ocr_max_ms == 1500.0
 
 
+def test_ocr_max_ms_rejects_value_beyond_ocr_timeout(monkeypatch):
+    monkeypatch.setenv("CAPYAUTO_OCR_MAX_MS", "30001")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
 def test_allow_screencap_fallback_false(monkeypatch):
     monkeypatch.setenv("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", "false")
     assert Settings().allow_screencap_fallback is False

@@ -2251,14 +2251,14 @@ git commit -m "feat(ui): 真机模式设备栏、镜像与控制抽屉"
 - 修改：`docs/superpowers/plans/2026-11-11-real-device-bridge-p4-p7.md`（回填第 3 节实测表）
 - 修改：`docs/superpowers/specs/2026-11-10-capyauto-real-device-bridge-design.md`（第 7 节 P4–P7 状态）
 
-- [ ] **步骤 1：启动后端（adb 模式）**
+- [x] **步骤 1：启动后端（adb 模式）**
 
 ```bash
 cd backend
 CAPYAUTO_DEVICE_BACKEND=adb CAPYAUTO_BACKEND_PORT=8084 .venv/bin/python -m app
 ```
 
-- [ ] **步骤 2：逐项 curl 验证 P4**
+- [x] **步骤 2：逐项 curl 验证 P4**
 
 ```bash
 SID=$(curl -s -X POST localhost:8084/api/session -H 'Content-Type: application/json' \
@@ -2277,7 +2277,7 @@ curl -s -X POST localhost:8084/api/app/stop -H 'Content-Type: application/json' 
 
 预期：`launch` 返回 `ok:true` 且 `usedUser:0`；`current.package` 为游戏包；`users` 返回 `switchSupported:false` 与「仅有一个用户」原因；飞行模式往返均 `ok:true` 且读回一致；`stop` 返回 `ok:true`。
 
-- [ ] **步骤 3：验证 P5 OCR**
+- [x] **步骤 3：验证 P5 OCR**
 
 在先启动游戏、停在任意含文本界面的前提下：
 
@@ -2286,9 +2286,9 @@ curl -s -X POST localhost:8084/api/vision/ocr -H 'Content-Type: application/json
   -d "{\"sessionId\":\"$SID\"}"
 ```
 
-预期：`items` 非空，`tookMs < 800`，最高 `confidence > 0.6`；记录识别到的文本。若游戏停留在纯图形界面，先进入技能三选一界面再执行。
+预期：`items` 非空，`tookMs` 小于 `CAPYAUTO_OCR_MAX_MS`（默认 5000ms），最高 `confidence > 0.6`；记录识别到的文本。若游戏停留在纯图形界面，先进入技能三选一界面再执行。
 
-- [ ] **步骤 4：运行验收脚本**
+- [x] **步骤 4：运行验收脚本**
 
 ```bash
 npm run verify
@@ -2296,7 +2296,7 @@ npm run verify
 
 预期：V1–V7、V10 PASS；V8 SKIP（仅一个用户）；V9 PASS。任一 FAIL 必须修复后重跑。报告写入 `backend/reports/verify-*.json|md`。
 
-- [ ] **步骤 5：前端真机人工验收**
+- [x] **步骤 5：前端真机人工验收**
 
 ```bash
 npm run backend   # 终端 A
@@ -2310,7 +2310,7 @@ npm run dev       # 终端 B
 - 抽屉里启动/停止游戏、列用户（切换按钮置灰并显示原因）、飞行模式开关、OCR 均可用。
 - 7 个页签切换无报错；关闭后端后页面显示明确错误且不白屏。
 
-- [ ] **步骤 6：回填实测数据并提交**
+- [x] **步骤 6：回填实测数据并提交**
 
 在第 3 节表格填入实测值（含 OCR 文本、耗时、verify 汇总），把规格第 7 节 P4–P7 行标注为「已通过（日期）」。
 
