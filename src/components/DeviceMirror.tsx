@@ -32,6 +32,7 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
   const hasFrameRef = useRef(false);
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [disconnected, setDisconnected] = useState(false);
   const [hasFrame, setHasFrame] = useState(false);
 
   const sessionId = session?.sessionId ?? null;
@@ -41,6 +42,7 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
   useEffect(() => {
     hasFrameRef.current = false;
     setHasFrame(false);
+    setDisconnected(false);
 
     if (!sessionId || !deviceWidth || !deviceHeight) {
       setStatus('idle');
@@ -51,12 +53,16 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
     let cancelled = false;
     setStatus('connecting');
     setStreamError(null);
+    setDisconnected(false);
 
     const ws = new WebSocket(buildMirrorUrl(sessionId));
     ws.binaryType = 'blob';
 
     ws.onopen = () => {
-      if (!cancelled) setStatus('live');
+      if (cancelled) return;
+      setStatus('live');
+      setStreamError(null);
+      setDisconnected(false);
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -70,7 +76,9 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
             code?: string;
           };
           if (payload?.type === 'error') {
+            // 断流错误帧：保留原始信息作为副标题，但「连接已断开」提示必须出现
             setStreamError(payload.message ?? payload.code ?? '镜像流返回错误');
+            setDisconnected(true);
             setStatus('error');
           }
         } catch {
@@ -96,6 +104,9 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
               hasFrameRef.current = true;
               setHasFrame(true);
             }
+            // 收到新帧 = 连接恢复，清除瞬时错误状态，避免永久锁死交互
+            setStreamError((prev) => (prev ? null : prev));
+            setDisconnected((prev) => (prev ? false : prev));
           }
           bitmap.close();
         })
@@ -112,7 +123,10 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
 
     ws.onclose = () => {
       // 保留最后一帧，仅提示重连
-      if (!cancelled) setStatus((prev) => (prev === 'error' ? 'error' : 'closed'));
+      if (!cancelled) {
+        setStatus((prev) => (prev === 'error' ? 'error' : 'closed'));
+        setDisconnected(true);
+      }
     };
 
     return () => {
@@ -135,7 +149,6 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
     onTap(x, y);
   };
 
-  const overlayMessage = streamError ?? error;
   const tapGeometry =
     lastTap && lastTap.deviceWidth > 0 && lastTap.deviceHeight > 0
       ? {
@@ -203,22 +216,47 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
             </>
           )}
 
-          {overlayMessage && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/80 p-4 text-center">
+          {/* 非阻塞提示：bridge 全局错误与瞬时解码失败，均不拦截画布点击 */}
+          {(error || (!disconnected && streamError)) && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col gap-1 p-1">
+              {error && (
+                <span className="flex items-start gap-1 px-2 py-1 rounded bg-rose-950/85 border border-rose-800/60 text-[10px] font-mono text-rose-300 break-all">
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                  <span>{error}</span>
+                </span>
+              )}
+              {!disconnected && streamError && (
+                <span className="px-2 py-1 rounded bg-amber-500/10 border border-amber-500/30 text-[10px] font-mono text-amber-400 break-all">
+                  {streamError}
+                </span>
+              )}
+            </div>
+          )}
+
+          {disconnected && !hasFrame && (
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/80 p-4 text-center">
               <AlertTriangle className="w-5 h-5 text-rose-400" />
-              <span className="text-[11px] text-rose-300 font-mono break-all">{overlayMessage}</span>
+              <span className="text-[11px] font-mono text-amber-400">连接已断开，点击刷新重连</span>
+              {streamError && (
+                <span className="text-[10px] font-mono text-rose-300 break-all">{streamError}</span>
+              )}
             </div>
           )}
 
-          {!overlayMessage && !hasFrame && (
-            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 text-[11px] font-mono text-slate-400">
-              {status === 'closed' ? '连接已断开，点击刷新重连' : '正在连接镜像流…'}
+          {disconnected && hasFrame && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-0.5 py-1.5 bg-slate-950/85 border-t border-slate-800">
+              <span className="text-[11px] font-mono text-amber-400">连接已断开，点击刷新重连</span>
+              {streamError && (
+                <span className="px-2 text-center text-[10px] font-mono text-rose-300 break-all">
+                  {streamError}
+                </span>
+              )}
             </div>
           )}
 
-          {!overlayMessage && hasFrame && status === 'closed' && (
-            <div className="absolute inset-x-0 bottom-0 py-1.5 text-center bg-slate-950/85 border-t border-slate-800 text-[11px] font-mono text-amber-400">
-              连接已断开，点击刷新重连
+          {!disconnected && !hasFrame && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-slate-950/80 text-[11px] font-mono text-slate-400">
+              正在连接镜像流…
             </div>
           )}
         </div>

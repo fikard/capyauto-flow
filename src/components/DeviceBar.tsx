@@ -60,49 +60,55 @@ export const DeviceBar: React.FC<DeviceBarProps> = ({
             </button>
           </div>
 
-          <span
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono font-bold tracking-wider ${
-              online
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                : 'bg-slate-800/60 text-slate-400 border-slate-700'
-            }`}
-          >
-            {online ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-            <span>{online ? 'ONLINE' : 'OFFLINE'}</span>
-          </span>
+          {mode === 'real' && (
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono font-bold tracking-wider ${
+                online
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-slate-800/60 text-slate-400 border-slate-700'
+              }`}
+            >
+              {online ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              <span>{online ? 'ONLINE' : 'OFFLINE'}</span>
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-400">
-          <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300 max-w-[220px] truncate">
-            {serial}
-          </span>
-
-          {session ? (
+          {mode === 'real' && (
             <>
-              <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
-                {session.width}×{session.height}
+              <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300 max-w-[220px] truncate">
+                {serial}
               </span>
-              <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
-                {session.fps} fps
-              </span>
-              <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-amber-400">
-                {session.mode}
-              </span>
-              {session.degraded && (
-                <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400">
-                  降级
-                </span>
-              )}
-              {session.sizeMismatch && (
-                <span className="px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400">
-                  尺寸不一致
+
+              {session ? (
+                <>
+                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
+                    {session.width}×{session.height}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
+                    {session.fps} fps
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-amber-400">
+                    {session.mode}
+                  </span>
+                  {session.degraded && (
+                    <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                      降级
+                    </span>
+                  )}
+                  {session.sizeMismatch && (
+                    <span className="px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400">
+                      尺寸不一致
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-500">
+                  无活动会话
                 </span>
               )}
             </>
-          ) : (
-            <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-500">
-              无活动会话
-            </span>
           )}
 
           <button
