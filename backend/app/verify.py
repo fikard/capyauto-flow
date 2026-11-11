@@ -5,6 +5,7 @@ import asyncio
 import dataclasses
 import io
 import json
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,11 +18,15 @@ from app.device import packages
 from app.device.adb import AdbRunner
 from app.device.adb_device import AdbScrcpyDevice
 from app.errors import ApiError
-from app.vision.ocr import engine_available, get_engine, ocr_png
+from app.vision.ocr import engine_available, ocr_png
 
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
 STATUS_SKIP = "SKIP"
+
+FRAME_TIMEOUT_S = 30.0
+RESTORE_ATTEMPTS = 10
+RESTORE_INTERVAL_S = 0.3
 
 
 @dataclass
@@ -52,6 +57,10 @@ def summarize(results: list[CheckResult]) -> dict:
     }
 
 
+def _escape_cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
 def render_markdown(results: list[CheckResult], *, serial: str, started: str) -> str:
     lines = [
         "# CapyAuto 真机验收报告",
@@ -64,7 +73,9 @@ def render_markdown(results: list[CheckResult], *, serial: str, started: str) ->
         "|---|---|---|---|",
     ]
     for result in results:
-        lines.append(f"| {result.check_id} | {result.status} | {result.detail} | {result.elapsed_ms}ms |")
+        lines.append(
+            f"| {result.check_id} | {result.status} | {_escape_cell(result.detail)} | {result.elapsed_ms}ms |"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -107,7 +118,7 @@ class VerifyContext:
 
     def save_png(self, check_id: str, png: bytes) -> str:
         self.frames_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S%f")
         path = self.frames_dir / f"{check_id}-{stamp}.png"
         path.write_bytes(png)
         return str(path)
@@ -126,12 +137,58 @@ def _component_text(component: tuple[str, str] | None) -> str:
     return "/".join(component) if component is not None else "未知"
 
 
+def _dummy_png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), (255, 255, 255)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _restore_airplane(ctx: VerifyContext, original: bool) -> str:
+    try:
+        if packages.read_airplane_mode(ctx.adb, ctx.serial) != original:
+            packages.set_airplane_mode(
+                ctx.adb,
+                ctx.serial,
+                original,
+                packages.parse_sdk(ctx.adb.getprop(ctx.serial, "ro.build.version.sdk")),
+            )
+    except Exception as exc:  # noqa: BLE001 - 恢复失败只记录，不掩盖主结果
+        return f"恢复失败: {type(exc).__name__}: {exc}"
+    return ""
+
+
+async def _restore_user(ctx: VerifyContext, user_id: int) -> str:
+    try:
+        packages.switch_user(ctx.adb, ctx.serial, user_id)
+    except Exception as exc:  # noqa: BLE001 - 恢复失败只记录，不掩盖主结果
+        return f"恢复失败: {type(exc).__name__}: {exc}"
+    current: int | None = None
+    for _ in range(RESTORE_ATTEMPTS):
+        try:
+            current = packages.parse_current_user(
+                ctx.adb.shell(ctx.serial, "am", "get-current-user")
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"恢复失败: {type(exc).__name__}: {exc}"
+        if current == user_id:
+            return ""
+        await asyncio.sleep(RESTORE_INTERVAL_S)
+    return f"恢复失败: 回读用户 {current}，期望 {user_id}"
+
+
 async def check_v1(ctx: VerifyContext) -> CheckResult:
-    version = ctx.adb.version()
-    devices = ctx.adb.devices()
-    online = [device for device in devices if device.state == "device"]
-    if not online:
+    if not ctx.serial:
         return CheckResult("V1", STATUS_FAIL, "adb devices 中没有 state=device 的设备", 0)
+    try:
+        version = ctx.adb.version()
+        devices = ctx.adb.devices()
+    except ApiError as exc:
+        return CheckResult("V1", STATUS_FAIL, f"adb 不可用: {exc.message}", 0)
+    online = [device.serial for device in devices if device.state == "device"]
+    if ctx.serial not in online:
+        return CheckResult(
+            "V1", STATUS_FAIL, f"所选设备 {ctx.serial} 不在在线列表中（在线: {online or '无'}）", 0
+        )
     return CheckResult("V1", STATUS_PASS, f"{version}；在线 {len(online)} 台", 0)
 
 
@@ -157,20 +214,32 @@ async def check_v2(ctx: VerifyContext) -> CheckResult:
 
 
 async def check_v3(ctx: VerifyContext) -> CheckResult:
-    started = time.monotonic()
     session_id = await ctx.session()
+    started = time.monotonic()
     stamps: list[float] = []
-    async for _frame in ctx.device.frames(session_id):
-        stamps.append(time.monotonic())
-        if len(stamps) >= 40 or time.monotonic() - started > 30:
-            break
+
+    async def collect() -> None:
+        async for _frame in ctx.device.frames(session_id):
+            stamps.append(time.monotonic())
+            if len(stamps) >= 40:
+                return
+
+    timed_out = False
+    try:
+        await asyncio.wait_for(collect(), FRAME_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        timed_out = True
     elapsed = _elapsed_ms(started)
     if len(stamps) < 5:
-        return CheckResult("V3", STATUS_FAIL, f"30s 内仅收到 {len(stamps)} 帧", elapsed)
+        prefix = "30s 内仅收到" if timed_out else "仅收到"
+        return CheckResult("V3", STATUS_FAIL, f"{prefix} {len(stamps)} 帧", elapsed)
     intervals = [(stamps[i + 1] - stamps[i]) * 1000 for i in range(len(stamps) - 1)]
     worst = p95(intervals)
     status = STATUS_PASS if worst < 400 else STATUS_FAIL
-    return CheckResult("V3", status, f"{len(stamps)} 帧；帧间隔 P95={worst:.0f}ms", elapsed)
+    detail = f"{len(stamps)} 帧；帧间隔 P95={worst:.0f}ms"
+    if timed_out:
+        detail += "（30s 超时截断）"
+    return CheckResult("V3", status, detail, elapsed)
 
 
 async def check_v4(ctx: VerifyContext) -> CheckResult:
@@ -197,12 +266,15 @@ async def check_v5(ctx: VerifyContext) -> CheckResult:
     ctx.adb.shell(ctx.serial, "am", "start", "-a", "android.settings.SETTINGS")
     await asyncio.sleep(1.2)
     before = packages.current_component(ctx.adb, ctx.serial)
-    session_id = await ctx.session()
-    await ctx.device.tap(session_id, 0.5, 0.5, 80, 6)
-    await asyncio.sleep(1.5)
-    after = packages.current_component(ctx.adb, ctx.serial)
+    try:
+        session_id = await ctx.session()
+        await ctx.device.tap(session_id, 0.5, 0.5, 80, 6)
+        await asyncio.sleep(1.5)
+        after = packages.current_component(ctx.adb, ctx.serial)
+    finally:
+        # 点击抛异常时也要退回设置页，避免影响后续检查
+        ctx.adb.shell(ctx.serial, "input", "keyevent", "4")
     elapsed = _elapsed_ms(started)
-    ctx.adb.shell(ctx.serial, "input", "keyevent", "4")
     if before == after:
         return CheckResult("V5", STATUS_SKIP, f"点击后前台未变化（{_component_text(before)}）", elapsed)
     return CheckResult("V5", STATUS_PASS, f"{_component_text(before)} → {_component_text(after)}", elapsed)
@@ -215,13 +287,21 @@ async def check_v6(ctx: VerifyContext) -> CheckResult:
     elapsed_ms = (time.monotonic() - started) * 1000
     session = ctx.device.get_session(session_id)
     center_x, center_y = session.width // 2, session.height // 2
-    ctx.adb.shell(ctx.serial, "input", "swipe", center_x, center_y, center_x, center_y, 80)
-    status = STATUS_PASS if abs(elapsed_ms - 80) <= 50 else STATUS_FAIL
+    ctx.adb.shell(
+        ctx.serial, "input", "swipe", center_x, center_y, center_x, center_y, result.press_ms
+    )
+    # 以适配器实际随机出的 press_ms 为基准，而不是请求的 80ms
+    if result.injected_via == "scrcpy":
+        ok = abs(elapsed_ms - result.press_ms) <= 50
+        expectation = f"实际按压 {result.press_ms}ms，误差阈值 ±50ms"
+    else:
+        ok = elapsed_ms <= result.press_ms + 200
+        expectation = f"实际按压 {result.press_ms}ms；兜底含 adb 进程开销，允许 +200ms"
     return CheckResult(
         "V6",
-        status,
-        f"注入 {result.injected_via}；实测 {elapsed_ms:.0f}ms（请求 80ms）；"
-        f"input swipe 兜底可执行（{center_x},{center_y}）",
+        STATUS_PASS if ok else STATUS_FAIL,
+        f"注入 {result.injected_via}；实测 {elapsed_ms:.0f}ms（{expectation}）；input swipe 兜底可执行"
+        f"（{center_x},{center_y}）",
         int(elapsed_ms),
     )
 
@@ -255,28 +335,38 @@ async def check_v8(ctx: VerifyContext) -> CheckResult:
     if not targets:
         return CheckResult("V8", STATUS_SKIP, "没有可切换的其他用户", 0)
     before = packages.parse_current_user(ctx.adb.shell(ctx.serial, "am", "get-current-user"))
+    if before is None:
+        # 读不到当前用户就无法安全恢复，直接跳过而不是切换后留在别的用户上
+        return CheckResult("V8", STATUS_SKIP, "无法读取当前用户", _elapsed_ms(started))
     target = targets[0]
+    restore_note = ""
     try:
         switched = await ctx.device.switch_user(session_id, target)
         after = packages.parse_current_user(ctx.adb.shell(ctx.serial, "am", "get-current-user"))
     except ApiError as exc:
-        return CheckResult("V8", STATUS_FAIL, f"切换用户 {target} 失败: {exc.message}", _elapsed_ms(started))
+        result = CheckResult(
+            "V8", STATUS_FAIL, f"切换用户 {target} 失败: {exc.message}", _elapsed_ms(started)
+        )
+    else:
+        if not switched.ok or after != target:
+            result = CheckResult(
+                "V8", STATUS_FAIL, f"切换用户失败：期望 {target}，实际 {after}", _elapsed_ms(started)
+            )
+        else:
+            result = CheckResult("V8", STATUS_PASS, f"用户 {before} → {target}", _elapsed_ms(started))
     finally:
-        if before is not None and before != target:
-            try:
-                packages.switch_user(ctx.adb, ctx.serial, before)
-            except Exception:  # noqa: BLE001 - 恢复失败不掩盖主结果
-                pass
-    elapsed = _elapsed_ms(started)
-    if not switched.ok or after != target:
-        return CheckResult("V8", STATUS_FAIL, f"切换用户失败：期望 {target}，实际 {after}", elapsed)
-    return CheckResult("V8", STATUS_PASS, f"用户 {before} → {target}", elapsed)
+        if before != target:
+            restore_note = await _restore_user(ctx, before)
+    if restore_note:
+        result.detail = f"{result.detail}；{restore_note}"
+    return result
 
 
 async def check_v9(ctx: VerifyContext) -> CheckResult:
     started = time.monotonic()
     original: bool | None = None
     on = off = False
+    failure: str | None = None
     try:
         original = packages.read_airplane_mode(ctx.adb, ctx.serial)
         session_id = await ctx.session()
@@ -285,21 +375,16 @@ async def check_v9(ctx: VerifyContext) -> CheckResult:
         await ctx.device.set_airplane_mode(session_id, False)
         off = packages.read_airplane_mode(ctx.adb, ctx.serial)
     except Exception as exc:  # noqa: BLE001 - 命令不可用时按规格记 SKIP
-        return CheckResult("V9", STATUS_SKIP, f"飞行模式不可用: {exc}", _elapsed_ms(started))
-    finally:
-        if original is not None:
-            try:
-                if packages.read_airplane_mode(ctx.adb, ctx.serial) != original:
-                    packages.set_airplane_mode(
-                        ctx.adb,
-                        ctx.serial,
-                        original,
-                        packages.parse_sdk(ctx.adb.getprop(ctx.serial, "ro.build.version.sdk")),
-                    )
-            except Exception:  # noqa: BLE001 - 恢复失败不抛出，避免掩盖主结果
-                pass
+        failure = f"飞行模式不可用: {exc}"
+    restore_note = _restore_airplane(ctx, original) if original is not None else ""
+    if failure is not None:
+        detail = f"{failure}；{restore_note}" if restore_note else failure
+        return CheckResult("V9", STATUS_SKIP, detail, _elapsed_ms(started))
     status = STATUS_PASS if on and not off else STATUS_FAIL
-    return CheckResult("V9", status, f"开启读回={on}，关闭读回={off}", _elapsed_ms(started))
+    detail = f"开启读回={on}，关闭读回={off}"
+    if restore_note:
+        detail = f"{detail}；{restore_note}"
+    return CheckResult("V9", status, detail, _elapsed_ms(started))
 
 
 async def check_v10(ctx: VerifyContext) -> CheckResult:
@@ -308,22 +393,25 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
     session_id = await ctx.session()
     await asyncio.to_thread(ctx.launch)
     await asyncio.sleep(2.0)
-    # 引擎首次调用要加载 ONNX 模型（秒级），必须在计时外预热，否则单次识别永远超 800ms 阈值
-    await asyncio.to_thread(get_engine)
-    started = time.monotonic()
+    # ONNX 首次推理是秒级冷启动：截图与 dummy OCR 都放在计时外，只统计单次识别耗时
+    await asyncio.to_thread(ocr_png, _dummy_png())
+    shot_started = time.monotonic()
     png = await ctx.device.screenshot(session_id)
-    items = await asyncio.to_thread(ocr_png, png)
-    elapsed = _elapsed_ms(started)
+    screenshot_ms = _elapsed_ms(shot_started)
     path = ctx.save_png("v10", png)
+    started = time.monotonic()
+    items = await asyncio.to_thread(ocr_png, png)
+    ocr_ms = _elapsed_ms(started)
+    timing = f"ocrMs={ocr_ms}，screenshotMs={screenshot_ms}"
     if not items:
-        return CheckResult("V10", STATUS_FAIL, f"未识别到文本；{path}", elapsed)
+        return CheckResult("V10", STATUS_FAIL, f"未识别到文本；{timing}；{path}", ocr_ms)
     best = max(items, key=lambda item: item.confidence)
-    status = STATUS_PASS if best.confidence > 0.6 and elapsed < 800 else STATUS_FAIL
+    status = STATUS_PASS if ocr_ms < 800 and best.confidence > 0.6 else STATUS_FAIL
     return CheckResult(
         "V10",
         status,
-        f"{len(items)} 条；最高 {best.text!r} {best.confidence:.2f}；{path}",
-        elapsed,
+        f"{len(items)} 条；最高 {best.text!r} {best.confidence:.2f}；{timing}；{path}",
+        ocr_ms,
     )
 
 
@@ -346,12 +434,11 @@ def _pick_serial(adb: AdbRunner, requested: str | None) -> str:
         return requested
     try:
         devices = adb.devices()
-    except ApiError as exc:
-        raise SystemExit(f"无法读取 adb 设备列表: {exc.message}") from exc
+    except ApiError:
+        # adb 不可用也照常出报告，具体错误由 V1 记录
+        return ""
     online = [device.serial for device in devices if device.state == "device"]
-    if not online:
-        raise SystemExit("没有在线设备，请先连接 USB 并授权调试")
-    return online[0]
+    return online[0] if online else ""
 
 
 async def run_checks(
@@ -369,6 +456,11 @@ async def run_checks(
         for check_id, check in CHECKS.items():
             if check_id in skip:
                 results.append(CheckResult(check_id, STATUS_SKIP, "命令行指定跳过", 0))
+                print(f"[{STATUS_SKIP}] {check_id} 命令行指定跳过")
+                continue
+            if not chosen and check_id != "V1":
+                results.append(CheckResult(check_id, STATUS_SKIP, "无在线设备", 0))
+                print(f"[{STATUS_SKIP}] {check_id} 无在线设备")
                 continue
             started = time.monotonic()
             try:
@@ -384,7 +476,10 @@ async def run_checks(
             results.append(result)
             print(f"[{result.status}] {result.check_id} {result.detail}")
     finally:
-        await ctx.close()
+        try:
+            await ctx.close()
+        except Exception as exc:  # noqa: BLE001 - 关闭失败不得丢弃已产出的结果
+            print(f"关闭会话失败: {type(exc).__name__}: {exc}", file=sys.stderr)
     return chosen, results
 
 
@@ -392,7 +487,7 @@ def write_reports(
     results: list[CheckResult], serial: str, out_dir: Path, started_at: str
 ) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S%f")
     payload = {
         "serial": serial,
         "started": started_at,
