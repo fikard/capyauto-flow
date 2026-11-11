@@ -4,7 +4,7 @@ import pytest
 
 from app.device.adb_device import AdbScrcpyDevice
 from app.device.base import MirrorSession
-from app.errors import AirplaneModeFailed, UserSwitchFailed
+from app.errors import AdbError, AirplaneModeFailed, UserSwitchFailed
 
 TWO_USERS = {
     "pm list users": "Users:\n\tUserInfo{0:机主:4c13} running\n\tUserInfo{999:分身:4c14}\n",
@@ -40,6 +40,30 @@ class SwitchableFakeAdb(FakeAdb):
             return ""
         if key == "am get-current-user":
             return self.current_user
+        return super().shell(serial, *args, timeout=timeout)
+
+
+class AirplaneErrorFakeAdb(FakeAdb):
+    def shell(self, serial: str, *args, timeout: float | None = None) -> str:
+        key = " ".join(str(arg) for arg in args)
+        if key.startswith("cmd connectivity airplane-mode"):
+            self.calls.append(key)
+            raise AdbError("adb 命令失败（1）", detail={"stderr": "permission denied"})
+        return super().shell(serial, *args, timeout=timeout)
+
+
+class ReadbackErrorFakeAdb(SwitchableFakeAdb):
+    def __init__(self, responses: dict[str, str], current_user: str):
+        super().__init__(responses, current_user)
+        self.fail_readback = False
+
+    def shell(self, serial: str, *args, timeout: float | None = None) -> str:
+        key = " ".join(str(arg) for arg in args)
+        if key.startswith("am switch-user "):
+            self.fail_readback = True
+        if key == "am get-current-user" and self.fail_readback:
+            self.calls.append(key)
+            raise AdbError("adb 命令失败（1）", detail={"stderr": "readback boom"})
         return super().shell(serial, *args, timeout=timeout)
 
 
@@ -199,3 +223,24 @@ def test_airplane_mismatch_raises():
         asyncio.run(device.set_airplane_mode("s1", True))
     assert exc.value.code == "AIRPLANE_MODE_FAILED"
     assert exc.value.status_code == 502
+
+
+def test_airplane_command_error_maps_to_airplane_failed():
+    adb = AirplaneErrorFakeAdb({"getprop ro.build.version.sdk": "34"})
+    device = make_device(adb)
+    with pytest.raises(AirplaneModeFailed) as exc:
+        asyncio.run(device.set_airplane_mode("s1", True))
+    assert exc.value.code == "AIRPLANE_MODE_FAILED"
+    assert exc.value.status_code == 502
+    assert exc.value.detail == {"stderr": "permission denied"}
+
+
+def test_switch_user_readback_error_maps_to_user_switch_failed(monkeypatch):
+    monkeypatch.setattr("app.device.adb_device.time.sleep", lambda _seconds: None)
+    adb = ReadbackErrorFakeAdb(dict(TWO_USERS), current_user="0")
+    device = make_device(adb)
+    with pytest.raises(UserSwitchFailed) as exc:
+        asyncio.run(device.switch_user("s1", 999))
+    assert exc.value.code == "USER_SWITCH_FAILED"
+    assert exc.value.status_code == 502
+    assert exc.value.detail == {"stderr": "readback boom"}

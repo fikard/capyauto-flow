@@ -1,6 +1,7 @@
 from app import deps
-from app.device.base import UserSwitchResult
-from app.errors import AirplaneModeFailed, UserSwitchFailed
+from app.device.adb_device import AdbScrcpyDevice
+from app.device.base import MirrorSession, UserSwitchResult
+from app.errors import AdbError, AirplaneModeFailed, UserSwitchFailed
 
 
 def _session(client) -> str:
@@ -89,6 +90,37 @@ def test_airplane_failure_returns_502(client, monkeypatch):
     monkeypatch.setattr(adapter, "set_airplane_mode", fail)
     response = client.post(
         "/api/network/airplane", json={"sessionId": session_id, "enable": True}
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "AIRPLANE_MODE_FAILED"
+
+
+class AirplaneErrorAdb:
+    def shell(self, serial, *args, timeout=None):
+        raise AdbError("adb 命令失败（1）", detail={"stderr": "permission denied"})
+
+    def getprop(self, serial, prop):
+        return "34"
+
+
+def test_airplane_adb_error_returns_airplane_failure(client, monkeypatch):
+    device = AdbScrcpyDevice(
+        adb=AirplaneErrorAdb(),
+        server_bin="scrcpy",
+        server_jar=None,
+        server_version="3.3.1",
+        tcp_port=27183,
+        fps=5,
+        bitrate=8_000_000,
+        jpeg_quality=70,
+        display_width=720,
+        frame_timeout=10.0,
+        allow_fallback=True,
+    )
+    device._sessions["s1"] = MirrorSession(id="s1", serial="S", width=1080, height=2400, fps=5)
+    monkeypatch.setattr(deps, "_adapter", device)
+    response = client.post(
+        "/api/network/airplane", json={"sessionId": "s1", "enable": True}
     )
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "AIRPLANE_MODE_FAILED"

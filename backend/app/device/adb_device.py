@@ -516,13 +516,17 @@ class AdbScrcpyDevice(DeviceAdapter):
             raise UserSwitchFailed(exc.message) from exc
         # am switch-user 是异步切换，立即回读可能仍是旧用户，需要短暂重试
         actual: int | None = None
-        for _ in range(10):
-            actual = packages.parse_current_user(
-                self._adb.shell(session.serial, "am", "get-current-user")
-            )
+        for attempt in range(10):
+            try:
+                actual = packages.parse_current_user(
+                    self._adb.shell(session.serial, "am", "get-current-user")
+                )
+            except ApiError as exc:
+                raise UserSwitchFailed(exc.message, detail=exc.detail) from exc
             if actual == user_id:
                 return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)
-            time.sleep(0.3)
+            if attempt < 9:
+                time.sleep(0.3)
         raise UserSwitchFailed(f"切换用户失败：期望 {user_id}，实际 {actual}")
 
     async def switch_user(self, session_id: str, user_id: int) -> UserSwitchResult:
@@ -531,8 +535,11 @@ class AdbScrcpyDevice(DeviceAdapter):
     def _airplane_sync(self, session_id: str, enable: bool) -> AirplaneResult:
         session = self.get_session(session_id)
         sdk = packages.parse_sdk(self._adb.getprop(session.serial, "ro.build.version.sdk"))
-        via = packages.set_airplane_mode(self._adb, session.serial, enable, sdk)
-        actual = packages.read_airplane_mode(self._adb, session.serial)
+        try:
+            via = packages.set_airplane_mode(self._adb, session.serial, enable, sdk)
+            actual = packages.read_airplane_mode(self._adb, session.serial)
+        except ApiError as exc:
+            raise AirplaneModeFailed(exc.message, detail=exc.detail) from exc
         if actual != enable:
             raise AirplaneModeFailed(f"飞行模式读回不一致：期望 {enable}，实际 {actual}")
         return AirplaneResult(ok=True, airplane_mode_on=actual, applied_via=via)
