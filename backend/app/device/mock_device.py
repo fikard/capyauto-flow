@@ -188,7 +188,10 @@ class MockDevice(DeviceAdapter):
         self.get_session(session_id)
         if user_id not in (0, 999):
             return UserSwitchResult(
-                ok=False, user_id=user_id, switch_supported=False, reason="未知用户"
+                ok=False,
+                user_id=user_id,
+                switch_supported=True,
+                reason=f"未知用户 {user_id}",
             )
         self._current_user = user_id
         return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)

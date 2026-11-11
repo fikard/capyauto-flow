@@ -146,7 +146,9 @@ def switch_support(
 
 
 def switch_user(adb: AdbRunner, serial: str, user_id: int) -> None:
-    adb.shell(serial, "am", "switch-user", str(user_id), timeout=20)
+    output = adb.shell(serial, "am", "switch-user", str(user_id), timeout=20)
+    if "Error:" in output or "Exception" in output:
+        raise AdbError(f"切换用户 {user_id} 失败", detail={"output": output[:500]})
 
 
 def read_airplane_mode(adb: AdbRunner, serial: str) -> bool:

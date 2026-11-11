@@ -4,7 +4,13 @@ import pytest
 
 from app.device.adb_device import AdbScrcpyDevice
 from app.device.base import MirrorSession
-from app.errors import AdbError
+from app.errors import AirplaneModeFailed, UserSwitchFailed
+
+TWO_USERS = {
+    "pm list users": "Users:\n\tUserInfo{0:机主:4c13} running\n\tUserInfo{999:分身:4c14}\n",
+    "pm list packages --user 0 com.hb.cncapy.and": "package:com.hb.cncapy.and\n",
+    "pm list packages --user 999 com.hb.cncapy.and": "package:com.hb.cncapy.and\n",
+}
 
 
 class FakeAdb:
@@ -21,6 +27,22 @@ class FakeAdb:
         return self.responses.get(f"getprop {prop}", "")
 
 
+class SwitchableFakeAdb(FakeAdb):
+    def __init__(self, responses: dict[str, str], current_user: str):
+        super().__init__(responses)
+        self.current_user = current_user
+
+    def shell(self, serial: str, *args, timeout: float | None = None) -> str:
+        key = " ".join(str(arg) for arg in args)
+        if key.startswith("am switch-user "):
+            self.calls.append(key)
+            self.current_user = key.split()[-1]
+            return ""
+        if key == "am get-current-user":
+            return self.current_user
+        return super().shell(serial, *args, timeout=timeout)
+
+
 def make_device(adb: FakeAdb) -> AdbScrcpyDevice:
     device = AdbScrcpyDevice(
         adb=adb,
@@ -34,6 +56,7 @@ def make_device(adb: FakeAdb) -> AdbScrcpyDevice:
         display_width=720,
         frame_timeout=10.0,
         allow_fallback=True,
+        game_package="com.hb.cncapy.and",
     )
     device._sessions["s1"] = MirrorSession(id="s1", serial="S", width=1200, height=2648, fps=5)
     return device
@@ -103,6 +126,51 @@ def test_switch_user_returns_unsupported_without_calling_am():
     assert "am switch-user 999" not in adb.calls
 
 
+def test_switch_user_unknown_user_keeps_switch_supported():
+    adb = FakeAdb({**TWO_USERS, "am get-current-user": "0"})
+    device = make_device(adb)
+    result = asyncio.run(device.switch_user("s1", 777))
+    assert result.ok is False
+    assert result.switch_supported is True
+    assert result.reason == "未知用户 777"
+    assert "am switch-user 777" not in adb.calls
+
+
+def test_switch_user_waits_for_current_user_change(monkeypatch):
+    monkeypatch.setattr("app.device.adb_device.time.sleep", lambda _seconds: None)
+    adb = SwitchableFakeAdb(dict(TWO_USERS), current_user="0")
+    device = make_device(adb)
+    result = asyncio.run(device.switch_user("s1", 999))
+    assert result.ok is True
+    assert result.user_id == 999
+    assert "am switch-user 999" in adb.calls
+
+
+def test_switch_user_raises_when_current_user_unchanged(monkeypatch):
+    monkeypatch.setattr("app.device.adb_device.time.sleep", lambda _seconds: None)
+    adb = FakeAdb({**TWO_USERS, "am get-current-user": "0", "am switch-user 999": ""})
+    device = make_device(adb)
+    with pytest.raises(UserSwitchFailed) as exc:
+        asyncio.run(device.switch_user("s1", 999))
+    assert exc.value.code == "USER_SWITCH_FAILED"
+    assert exc.value.status_code == 502
+    assert "期望 999" in str(exc.value)
+
+
+def test_switch_user_raises_when_command_reports_error():
+    adb = FakeAdb(
+        {
+            **TWO_USERS,
+            "am get-current-user": "0",
+            "am switch-user 999": "Error: user 999 does not exist",
+        }
+    )
+    device = make_device(adb)
+    with pytest.raises(UserSwitchFailed) as exc:
+        asyncio.run(device.switch_user("s1", 999))
+    assert "切换用户 999 失败" in str(exc.value)
+
+
 def test_airplane_reads_back_and_reports_via():
     adb = FakeAdb(
         {
@@ -127,5 +195,7 @@ def test_airplane_mismatch_raises():
         }
     )
     device = make_device(adb)
-    with pytest.raises(AdbError):
+    with pytest.raises(AirplaneModeFailed) as exc:
         asyncio.run(device.set_airplane_mode("s1", True))
+    assert exc.value.code == "AIRPLANE_MODE_FAILED"
+    assert exc.value.status_code == 502

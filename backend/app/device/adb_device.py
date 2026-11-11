@@ -505,12 +505,25 @@ class AdbScrcpyDevice(DeviceAdapter):
             return UserSwitchResult(
                 ok=False, user_id=user_id, switch_supported=False, reason=result.reason
             )
+        if user_id not in {row.id for row in result.users}:
+            return UserSwitchResult(
+                ok=False, user_id=user_id, switch_supported=True, reason=f"未知用户 {user_id}"
+            )
         session = self.get_session(session_id)
         try:
             packages.switch_user(self._adb, session.serial, user_id)
         except ApiError as exc:
             raise UserSwitchFailed(exc.message) from exc
-        return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)
+        # am switch-user 是异步切换，立即回读可能仍是旧用户，需要短暂重试
+        actual: int | None = None
+        for _ in range(10):
+            actual = packages.parse_current_user(
+                self._adb.shell(session.serial, "am", "get-current-user")
+            )
+            if actual == user_id:
+                return UserSwitchResult(ok=True, user_id=user_id, switch_supported=True)
+            time.sleep(0.3)
+        raise UserSwitchFailed(f"切换用户失败：期望 {user_id}，实际 {actual}")
 
     async def switch_user(self, session_id: str, user_id: int) -> UserSwitchResult:
         return await asyncio.to_thread(self._switch_sync, session_id, user_id)
