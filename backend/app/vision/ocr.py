@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import threading
 from dataclasses import dataclass
 
@@ -9,6 +10,9 @@ from PIL import Image
 
 _engine = None
 _engine_lock = threading.Lock()
+
+# 超过 6 线程在 CPU 推理上会因线程争用反而变慢（实测 12 线程比 6 慢 40% 以上）
+_MAX_INFERENCE_THREADS = 6
 
 
 @dataclass(frozen=True)
@@ -32,7 +36,11 @@ def get_engine():
         if _engine is None:
             from rapidocr_onnxruntime import RapidOCR
 
-            _engine = RapidOCR()
+            _engine = RapidOCR(
+                # 游戏截图固定正向，关闭 180° 方向分类可省一次分类推理
+                use_cls=False,
+                intra_op_num_threads=min(os.cpu_count() or 4, _MAX_INFERENCE_THREADS),
+            )
     return _engine
 
 

@@ -60,6 +60,12 @@ def test_nonzero_exit_raises_adb_error():
     assert exc.value.code == "ADB_FAILED"
 
 
+def test_check_false_returns_empty_output_on_nonzero_exit():
+    # pidof 在进程不存在时退出码为 1，调用方需要拿到空输出而不是异常
+    runner = AdbRunner(exec_fn=fake_exec(returncode=1, stdout=b""))
+    assert runner.run("shell", "pidof", "com.foo", serial="S", check=False) == ""
+
+
 def test_timeout_raises_adb_timeout():
     runner = AdbRunner(exec_fn=fake_exec(raise_exc=subprocess.TimeoutExpired("adb", 10)))
     with pytest.raises(AdbTimeout) as exc:

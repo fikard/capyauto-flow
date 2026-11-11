@@ -68,6 +68,13 @@ def test_frame_timeout_accepts_float(monkeypatch):
     assert Settings().frame_timeout == 2.5
 
 
+def test_ocr_max_ms_defaults_and_override(monkeypatch):
+    monkeypatch.delenv("CAPYAUTO_OCR_MAX_MS", raising=False)
+    assert Settings().ocr_max_ms == 5000.0
+    monkeypatch.setenv("CAPYAUTO_OCR_MAX_MS", "1500")
+    assert Settings().ocr_max_ms == 1500.0
+
+
 def test_allow_screencap_fallback_false(monkeypatch):
     monkeypatch.setenv("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", "false")
     assert Settings().allow_screencap_fallback is False

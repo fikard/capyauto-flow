@@ -23,6 +23,10 @@ class FakeAdb:
         self.calls.append(key)
         return self.responses.get(key, "")
 
+    def run(self, *args, serial: str | None = None, timeout: float | None = None, binary: bool = False, check: bool = True):
+        assert args and args[0] == "shell"
+        return self.shell(serial, *args[1:], timeout=timeout)
+
     def getprop(self, serial: str, prop: str) -> str:
         return self.responses.get(f"getprop {prop}", "")
 

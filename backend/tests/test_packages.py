@@ -32,6 +32,10 @@ class FakeAdb:
         self.calls.append((serial, key))
         return self.responses.get(key, "")
 
+    def run(self, *args, serial: str | None = None, timeout: float | None = None, binary: bool = False, check: bool = True):
+        assert args and args[0] == "shell"
+        return self.shell(serial, *args[1:], timeout=timeout)
+
 
 def test_parse_users_reads_name_and_running_flag():
     rows = parse_users("Users:\n\tUserInfo{0:机主:4c13} running\n\tUserInfo{999:分身:5d20}\n")

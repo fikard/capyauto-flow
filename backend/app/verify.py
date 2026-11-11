@@ -418,11 +418,12 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
             _elapsed_ms(started),
         )
     ocr_ms = _elapsed_ms(started)
-    timing = f"ocrMs={ocr_ms}，screenshotMs={screenshot_ms}"
+    ocr_max_ms = config.settings.ocr_max_ms
+    timing = f"ocrMs={ocr_ms}（阈值 {ocr_max_ms:g}ms），screenshotMs={screenshot_ms}"
     if not items:
         return CheckResult("V10", STATUS_FAIL, f"未识别到文本；{timing}；{path}", ocr_ms)
     best = max(items, key=lambda item: item.confidence)
-    status = STATUS_PASS if ocr_ms < 800 and best.confidence > 0.6 else STATUS_FAIL
+    status = STATUS_PASS if ocr_ms < ocr_max_ms and best.confidence > 0.6 else STATUS_FAIL
     return CheckResult(
         "V10",
         status,

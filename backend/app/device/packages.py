@@ -109,7 +109,7 @@ def launch_app(
     output = adb.shell(serial, *args, timeout=30)
     if "Error:" in output or "Exception" in output:
         raise AdbError(f"启动 {package} 失败", detail={"output": output[:500]})
-    return resolved, parse_pid(adb.shell(serial, "pidof", package))
+    return resolved, pid_of(adb, serial, package)
 
 
 def stop_app(adb: AdbRunner, serial: str, package: str) -> None:
@@ -121,7 +121,9 @@ def current_component(adb: AdbRunner, serial: str) -> tuple[str, str] | None:
 
 
 def pid_of(adb: AdbRunner, serial: str, package: str) -> int | None:
-    return parse_pid(adb.shell(serial, "pidof", package))
+    # pidof 在进程不存在时以退出码 1 结束，属于正常结果而不是 adb 故障
+    output = adb.run("shell", "pidof", package, serial=serial, check=False)
+    return parse_pid(str(output))
 
 
 def users(adb: AdbRunner, serial: str) -> list[AndroidUser]:

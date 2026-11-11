@@ -65,7 +65,14 @@ class AdbRunner:
         self.default_timeout = default_timeout
         self._exec_fn = exec_fn or _subprocess_exec
 
-    def run(self, *args, serial: str | None = None, timeout: float | None = None, binary: bool = False):
+    def run(
+        self,
+        *args,
+        serial: str | None = None,
+        timeout: float | None = None,
+        binary: bool = False,
+        check: bool = True,
+    ):
         argv = [self.adb_path]
         if serial:
             argv += ["-s", serial]
@@ -77,7 +84,7 @@ class AdbRunner:
             raise AdbNotFound("未找到 adb，请先执行 brew install scrcpy") from exc
         except subprocess.TimeoutExpired as exc:
             raise AdbTimeout(f"adb 超时（{effective_timeout}s）: {' '.join(argv)}") from exc
-        if code != 0:
+        if code != 0 and check:
             raise AdbError(
                 f"adb 命令失败（{code}）: {' '.join(argv)}",
                 detail={"stderr": err.decode("utf-8", "replace")[:500]},

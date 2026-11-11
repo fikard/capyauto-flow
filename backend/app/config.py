@@ -83,6 +83,7 @@ class Settings:
     jpeg_quality: int = field(default_factory=lambda: _env_int("CAPYAUTO_JPEG_QUALITY", 70, lo=1, hi=100))
     scrcpy_bitrate: int = field(default_factory=lambda: _env_int("CAPYAUTO_SCRCPY_BITRATE", 8_000_000, lo=1))
     frame_timeout: float = field(default_factory=lambda: _env_float("CAPYAUTO_FRAME_TIMEOUT", 10.0))
+    ocr_max_ms: float = field(default_factory=lambda: _env_float("CAPYAUTO_OCR_MAX_MS", 5000.0))
     allow_screencap_fallback: bool = field(
         default_factory=lambda: _env_bool("CAPYAUTO_ALLOW_SCREENCAP_FALLBACK", True)
     )

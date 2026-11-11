@@ -219,6 +219,31 @@ def test_v10_warmup_ocr_not_counted_in_timing(monkeypatch, tmp_path):
     assert "ocrMs=" in result.detail
 
 
+def test_v10_uses_configurable_ocr_threshold(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_ocr(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            return []
+        time.sleep(0.15)
+        return [SimpleNamespace(text="开始游戏", confidence=0.92)]
+
+    monkeypatch.setattr(verify, "engine_available", lambda: True)
+    monkeypatch.setattr(verify, "ocr_png", fake_ocr)
+    monkeypatch.setattr(verify.asyncio, "sleep", _no_sleep)
+
+    monkeypatch.setattr(verify.config, "settings", SimpleNamespace(ocr_max_ms=50.0))
+    tight = asyncio.run(verify.check_v10(_v10_ctx(b"\x89PNG v10", tmp_path)))
+    assert tight.status == "FAIL"
+    assert "阈值 50ms" in tight.detail
+
+    calls.clear()
+    monkeypatch.setattr(verify.config, "settings", SimpleNamespace(ocr_max_ms=5000.0))
+    relaxed = asyncio.run(verify.check_v10(_v10_ctx(b"\x89PNG v10", tmp_path)))
+    assert relaxed.status == "PASS"
+
+
 def test_v10_warmup_ocr_timeout_fails_without_timing(monkeypatch, tmp_path):
     calls = []
 
