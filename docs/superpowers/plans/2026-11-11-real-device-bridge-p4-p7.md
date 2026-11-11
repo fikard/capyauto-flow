@@ -1611,7 +1611,7 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
     if not items:
         return CheckResult("V10", STATUS_FAIL, f"未识别到文本；{path}", elapsed)
     best = max(items, key=lambda item: item.confidence)
-    status = STATUS_PASS if best.confidence > 0.6 and elapsed < 800 else STATUS_FAIL
+    status = STATUS_PASS if best.confidence > 0.6 and elapsed < config.settings.ocr_max_ms else STATUS_FAIL
     return CheckResult(
         "V10",
         status,

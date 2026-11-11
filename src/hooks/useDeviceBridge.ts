@@ -124,8 +124,10 @@ export function useDeviceBridge() {
     if (!current) return null;
     const generation = generationRef.current;
     const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
-    return run(() => deviceClient.launchApp(current.sessionId, packageName, 0), alive);
-  }, [run]);
+    // 跟随当前用户启动，避免多用户设备上 switch-user 后仍强制回到 user 0
+    const activeUserId = users?.users.find((row) => row.current)?.id;
+    return run(() => deviceClient.launchApp(current.sessionId, packageName, activeUserId), alive);
+  }, [run, users]);
 
   const stopGame = useCallback(async (packageName = DEFAULT_PACKAGE) => {
     const current = sessionRef.current;
