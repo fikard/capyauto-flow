@@ -21,6 +21,13 @@ class DeviceInfo:
 
 
 @dataclass
+class AndroidUser:
+    id: int
+    name: str
+    current: bool = False
+
+
+@dataclass
 class MirrorSession:
     id: str
     serial: str

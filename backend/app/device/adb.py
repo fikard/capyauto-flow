@@ -110,6 +110,9 @@ class AdbRunner:
         except ApiError:
             pass
 
+    def shell(self, serial: str, *args, timeout: float | None = None) -> str:
+        return str(self.run("shell", *args, serial=serial, timeout=timeout))
+
     def exec_out(self, serial: str, *args) -> bytes:
         return self.run("exec-out", *args, serial=serial, binary=True, timeout=20)
 
