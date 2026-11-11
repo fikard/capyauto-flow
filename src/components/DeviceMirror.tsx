@@ -92,7 +92,8 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
 
       createImageBitmap(blob)
         .then((bitmap) => {
-          if (cancelled) {
+          // 帧可能在 close 前入队：连接已关闭时丢弃迟到帧，不得覆盖 onclose 的断流状态
+          if (cancelled || ws.readyState !== WebSocket.OPEN) {
             bitmap.close();
             return;
           }
