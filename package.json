@@ -7,6 +7,7 @@
     "dev": "vite --port=${CAPYAUTO_FRONTEND_PORT:-5178} --host 0.0.0.0",
     "backend": "cd backend && .venv/bin/python -m app",
     "test:backend": "cd backend && .venv/bin/python -m pytest -q",
+    "verify": "cd backend && .venv/bin/python -m app.verify",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
