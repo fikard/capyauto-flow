@@ -17,7 +17,7 @@ from app.device import packages
 from app.device.adb import AdbRunner
 from app.device.adb_device import AdbScrcpyDevice
 from app.errors import ApiError
-from app.vision.ocr import engine_available, ocr_png
+from app.vision.ocr import engine_available, get_engine, ocr_png
 
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
@@ -308,6 +308,8 @@ async def check_v10(ctx: VerifyContext) -> CheckResult:
     session_id = await ctx.session()
     await asyncio.to_thread(ctx.launch)
     await asyncio.sleep(2.0)
+    # 引擎首次调用要加载 ONNX 模型（秒级），必须在计时外预热，否则单次识别永远超 800ms 阈值
+    await asyncio.to_thread(get_engine)
     started = time.monotonic()
     png = await ctx.device.screenshot(session_id)
     items = await asyncio.to_thread(ocr_png, png)
