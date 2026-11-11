@@ -113,7 +113,7 @@ export function useDeviceBridge() {
     const current = sessionRef.current;
     if (!current) return null;
     const generation = generationRef.current;
-    const alive = () => generationRef.current === generation;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
     const result = await run(() => deviceClient.tap(current.sessionId, x, y), alive);
     if (result && alive()) setLastTap(result);
     return result;
@@ -122,20 +122,24 @@ export function useDeviceBridge() {
   const launchGame = useCallback(async (packageName = DEFAULT_PACKAGE) => {
     const current = sessionRef.current;
     if (!current) return null;
-    return run(() => deviceClient.launchApp(current.sessionId, packageName, 0));
+    const generation = generationRef.current;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
+    return run(() => deviceClient.launchApp(current.sessionId, packageName, 0), alive);
   }, [run]);
 
   const stopGame = useCallback(async (packageName = DEFAULT_PACKAGE) => {
     const current = sessionRef.current;
     if (!current) return null;
-    return run(() => deviceClient.stopApp(current.sessionId, packageName));
+    const generation = generationRef.current;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
+    return run(() => deviceClient.stopApp(current.sessionId, packageName), alive);
   }, [run]);
 
   const loadUsers = useCallback(async () => {
     const current = sessionRef.current;
     if (!current) return null;
     const generation = generationRef.current;
-    const alive = () => generationRef.current === generation;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
     const result = await run(() => deviceClient.listUsers(current.sessionId), alive);
     if (result && alive()) setUsers(result);
     return result;
@@ -145,7 +149,7 @@ export function useDeviceBridge() {
     const current = sessionRef.current;
     if (!current) return null;
     const generation = generationRef.current;
-    const alive = () => generationRef.current === generation;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
     const result = await run(() => deviceClient.switchUser(current.sessionId, userId), alive);
     if (result && alive()) await loadUsers();
     return result;
@@ -154,14 +158,16 @@ export function useDeviceBridge() {
   const toggleAirplane = useCallback(async (enable: boolean) => {
     const current = sessionRef.current;
     if (!current) return null;
-    return run(() => deviceClient.airplane(current.sessionId, enable));
+    const generation = generationRef.current;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
+    return run(() => deviceClient.airplane(current.sessionId, enable), alive);
   }, [run]);
 
   const runOcr = useCallback(async () => {
     const current = sessionRef.current;
     if (!current) return null;
     const generation = generationRef.current;
-    const alive = () => generationRef.current === generation;
+    const alive = () => generationRef.current === generation && sessionRef.current?.sessionId === current.sessionId;
     const result = await run(() => deviceClient.ocr(current.sessionId), alive);
     if (result && alive()) setOcr(result);
     return result;
