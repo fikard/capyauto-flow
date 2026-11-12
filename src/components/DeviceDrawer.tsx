@@ -217,7 +217,24 @@ export const DeviceDrawer: React.FC<DeviceDrawerProps> = ({
                     key={`${item.text}_${index}`}
                     className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-950/60 border border-slate-800 text-[11px] text-slate-300"
                   >
-                    <span className="truncate">{item.text}</span>
+                    <span className="truncate flex items-center gap-1.5 min-w-0">
+                      {item.text}
+                      {item.rarity && (
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded shrink-0 bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          {item.rarity}
+                        </span>
+                      )}
+                      {item.kind && (
+                        <span className="text-[9px] px-1 py-0.5 rounded shrink-0 bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                          {item.kind}
+                        </span>
+                      )}
+                      {item.lexiconRef && (
+                        <span className="text-[9px] font-mono text-slate-500 shrink-0" title={item.lexiconRef}>
+                          {item.lexiconRef}
+                        </span>
+                      )}
+                    </span>
                     <span className="font-mono text-[10px] text-emerald-400 shrink-0">
                       {item.confidence.toFixed(2)}
                     </span>

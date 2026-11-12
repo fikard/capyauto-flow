@@ -11,3 +11,7 @@ __pycache__/
 .pytest_cache/
 reports/
 .screenshots/
+
+# 卡皮知识库（从 moo-capybara-db.netlify.app 抓取生成）
+capy-db-raw/
+capy-knowledge/

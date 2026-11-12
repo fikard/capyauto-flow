@@ -46,18 +46,9 @@ export default function App() {
 
   // Configuration
   const [config, setConfig] = useState<PipelineConfig>({
-    skillPriorityList: [
-      '越战越硬',
-      '伤害减免',
-      '普攻减免',
-      '格挡率',
-      '冰刺',
-      '冰冻精通',
-      '连击强化',
-      '暴击概率',
-      '越战越勇',
-      '生命强化',
-    ],
+    // 技能优先级初始为空，由 SkillPriorityStudio 从知识库建议中补入；
+    // 历史硬编码项见 scriptFiles.ts，已去除以便与知识库动态对齐
+    skillPriorityList: [],
     gaussianStdev: 6,
     pressDurationMean: 80,
     pressDurationStdev: 20,

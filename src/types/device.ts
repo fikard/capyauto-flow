@@ -47,6 +47,12 @@ export interface OcrItemPayload {
   text: string;
   confidence: number;
   bounds: { left: number; top: number; right: number; bottom: number };
+  /** 知识库标注：秘宝 kind（核心/守护/图腾） */
+  kind?: string | null;
+  /** 知识库标注：品质（神话/传说/史诗/稀有/超越/至宝/不朽/绝世） */
+  rarity?: string | null;
+  /** 知识库标注：主词条英文字段键，指向 ocr_attr_index.json */
+  lexiconRef?: string | null;
 }
 
 export interface OcrPayload {

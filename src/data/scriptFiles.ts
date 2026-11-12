@@ -147,18 +147,7 @@ main();
     "reactionMinDelay": 400,
     "reactionMaxDelay": 850
   },
-  "skillPriorityList": [
-    "越战越硬",
-    "伤害减免",
-    "普攻减免",
-    "格挡率",
-    "冰刺",
-    "冰冻精通",
-    "连击强化",
-    "暴击概率",
-    "越战越勇",
-    "生命强化"
-  ],
+  "skillPriorityList": [],
   "accounts": [
     {
       "id": "main_01",
@@ -250,9 +239,9 @@ let config = {};
 try {
     config = JSON.parse(files.read('./config.json'));
 } catch (e) {
-    config = {
-        skillPriorityList: ["越战越硬", "伤害减免", "普攻减免", "格挡率", "冰刺", "冰冻精通", "连击强化", "暴击概率"]
-    };
+    // fallback：留 1 条与知识库词条对齐的默认优先级，避免 automator.js 里的 match 循环空转；
+    // 生产应通过 config.json（由前端 SkillPriorityStudio 写入）动态生成
+    config = { skillPriorityList: ["最终伤害减免%"] };
 }
 
 const Vision = {

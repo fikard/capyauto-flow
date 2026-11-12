@@ -36,6 +36,9 @@ async def ocr(req: OcrRequest) -> dict:
                     "right": item.bounds[2],
                     "bottom": item.bounds[3],
                 },
+                "kind": item.kind,
+                "rarity": item.rarity,
+                "lexiconRef": item.lexicon_ref,
             }
             for item in items
         ],
