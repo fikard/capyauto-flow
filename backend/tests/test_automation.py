@@ -136,7 +136,8 @@ def test_daily_collects_rewards(monkeypatch):
     adapter = FakeAdapter()
     screens = [
         [_item("开始", 0.45, 0.82), _item("游历", 0.499, 0.748)],
-        [_item("领取", 0.50, 0.80), _item("一键领取", 0.60, 0.85)],
+        [_item("开始游历", 0.50, 0.80), _item("挂机奖励", 0.30, 0.85)],
+        [_item("领取", 0.50, 0.80)],
         [_item("开始", 0.45, 0.82)],
     ]
     engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
@@ -148,7 +149,32 @@ def test_daily_collects_rewards(monkeypatch):
     _run(scenario())
     status = engine.status()
     assert status["status"] == "completed"
-    assert status["progress"]["dailySteps"] >= 1
+    assert status["progress"]["dailySteps"] >= 2
+
+
+def test_daily_returns_after_journey_page(monkeypatch):
+    """「开始游历」不能被当成冒险页的「开始」按钮"""
+    monkeypatch.setattr(engine_module, "engine_available", lambda: True)
+    adapter = FakeAdapter()
+    screens = [
+        [_item("开始", 0.45, 0.82), _item("游历", 0.499, 0.748)],
+        [_item("开始游历", 0.50, 0.80), _item("挂机奖励", 0.30, 0.85)],
+        [_item("游历结束", 0.50, 0.30), _item("返回", 0.50, 0.85)],
+        [_item("开始", 0.45, 0.82), _item("家园", 0.070, 0.745)],
+        [_item("一键收获", 0.50, 0.86)],
+        [_item("开始", 0.45, 0.82)],
+    ]
+    engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
+
+    async def scenario():
+        await engine.start(adapter.session_id, task="daily")
+        await engine._task
+
+    _run(scenario())
+    status = engine.status()
+    assert status["progress"]["dailySteps"] == 2
+    assert any("家园：点击「一键收获」" in log["message"] for log in status["logs"])
+    assert not any("家园：点击「开始游历」" in log["message"] for log in status["logs"])
 
 
 def test_start_rejects_concurrent_run(monkeypatch):
@@ -449,6 +475,120 @@ def test_stage_plays_dig_minigame(monkeypatch):
     assert status["progress"]["runs"] == 1
     assert any("挖宝翻牌" in log["message"] for log in status["logs"])
     assert any(abs(x - 0.170) < 0.01 and abs(y - 0.440) < 0.01 for x, y in adapter.taps)
+
+
+def test_stage_handles_victory_screen(monkeypatch):
+    monkeypatch.setattr(engine_module, "engine_available", lambda: True)
+    adapter = FakeAdapter()
+    screens = [
+        [_item("开始", 0.45, 0.82)],
+        [
+            _item("胜利", 0.50, 0.27),
+            _item("生存天数", 0.50, 0.36),
+            _item("25天", 0.50, 0.40),
+            _item("最高旅程：25天", 0.35, 0.44),
+            _item("已学技能", 0.08, 0.94),
+            _item("返回", 0.50, 0.85),
+            _item("战斗中", 0.50, 0.93),
+        ],
+        [_item("开始", 0.45, 0.82)],
+    ]
+    engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
+
+    async def scenario():
+        await engine.start(adapter.session_id, task="stage", max_runs=1)
+        await engine._task
+
+    _run(scenario())
+    status = engine.status()
+    assert status["progress"]["runs"] == 1
+    assert any("关卡结算" in log["message"] for log in status["logs"])
+
+
+def test_stage_skill_cards_ignore_modal_title(monkeypatch):
+    """弹窗标题（如「能力进化」）不能被当成技能卡"""
+    monkeypatch.setattr(engine_module, "engine_available", lambda: True)
+    adapter = FakeAdapter()
+    screens = [
+        [_item("开始", 0.45, 0.82)],
+        [
+            _item("能力进化", 0.50, 0.310),
+            _item("从下方选择一个技能", 0.50, 0.355),
+            _item("攻击", 0.25, 0.392),
+            _item("攻击↑。", 0.30, 0.427),
+            _item("鳄霸", 0.25, 0.548),
+            _item("胜利誓约之剑", 0.25, 0.669),
+            _item("已学技能", 0.897, 0.892),
+        ],
+        [_item("第16天", 0.09, 0.74), _item("下一天", 0.50, 0.91)],
+        [_item("返回主城", 0.50, 0.90)],
+        [_item("开始", 0.45, 0.82)],
+    ]
+    engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
+
+    async def scenario():
+        await engine.start(adapter.session_id, task="stage", max_runs=1)
+        await engine._task
+
+    _run(scenario())
+    status = engine.status()
+    assert status["progress"]["runs"] == 1
+    assert not any("能力进化" in log["message"] for log in status["logs"])
+
+
+def test_stage_handles_pact_prompt(monkeypatch):
+    """「是否与…签订契约」类弹窗，优先选择签订"""
+    monkeypatch.setattr(engine_module, "engine_available", lambda: True)
+    adapter = FakeAdapter()
+    screens = [
+        [_item("开始", 0.45, 0.82)],
+        [
+            _item("你遇见了咕噜怪！", 0.487, 0.407),
+            _item("是否与咕噜怪签订契约，获得技能？", 0.493, 0.448),
+            _item("传说", 0.150, 0.550),
+            _item("缩小魔法", 0.347, 0.560),
+            _item("攻击有概率使敌人缩小。", 0.396, 0.586),
+            _item("第10天", 0.100, 0.730),
+            _item("拒绝", 0.283, 0.764),
+            _item("签订", 0.716, 0.765),
+            _item("下一天", 0.502, 0.905),
+        ],
+        [_item("第10天", 0.09, 0.74), _item("下一天", 0.50, 0.91)],
+        [_item("返回主城", 0.50, 0.90)],
+        [_item("开始", 0.45, 0.82)],
+    ]
+    engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
+
+    async def scenario():
+        await engine.start(adapter.session_id, task="stage", max_runs=1)
+        await engine._task
+
+    _run(scenario())
+    status = engine.status()
+    assert status["progress"]["runs"] == 1
+    assert any("契约选择：「签订」" in log["message"] for log in status["logs"])
+
+
+def test_stage_retries_start_if_not_entered(monkeypatch):
+    monkeypatch.setattr(engine_module, "engine_available", lambda: True)
+    adapter = FakeAdapter()
+    screens = [
+        [_item("开始", 0.45, 0.82)],
+        [_item("开始", 0.45, 0.82), _item("活动", 0.91, 0.848)],
+        [_item("第1天", 0.09, 0.74), _item("下一天", 0.50, 0.91)],
+        [_item("返回主城", 0.50, 0.90)],
+        [_item("开始", 0.45, 0.82)],
+    ]
+    engine = _engine(adapter, _tap_scripted_ocr(adapter, screens))
+
+    async def scenario():
+        await engine.start(adapter.session_id, task="stage", max_runs=1)
+        await engine._task
+
+    _run(scenario())
+    status = engine.status()
+    assert status["progress"]["runs"] == 1
+    assert any("重新点击「开始」" in log["message"] for log in status["logs"])
 
 
 def test_automation_api_start_status_stop(client, monkeypatch):

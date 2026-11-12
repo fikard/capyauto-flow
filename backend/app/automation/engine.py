@@ -23,13 +23,16 @@ DAILY_ENTRIES = ("游历", "家园", "日历", "特权卡", "活动", "超值好
 COLLECT_WORDS = (
     "一键领取",
     "全部领取",
+    "一键收获",
+    "一键种植",
+    "开始游历",
+    "挂机奖励",
     "领取",
     "收取",
     "免费领取",
     "签到",
     "立即领取",
     "点击领取",
-    "升级",
 )
 BACK_WORDS = ("返回", "关闭", "退出")
 # 推关过程中底部可推进流程的按钮
@@ -46,6 +49,7 @@ STAGE_ACTIONS = (
     "打开",
     "开启",
     "拾取",
+    "点击关闭",
 )
 # 幸运转盘 / 幸运宝藏：标题整条匹配
 WHEEL_TITLES = ("幸运转盘", "幸运宝藏")
@@ -236,10 +240,15 @@ class AutomationEngine:
             self._log("info", f"进入日常：{entry}")
             # 图标在文案上方，点击点上移一点
             await self._tap(session_id, anchor, dy=-0.025)
+            last_signature: str | None = None
             for _ in range(5):
                 if self._stopping:
                     return
                 screen = await self._read(session_id)
+                signature = "|".join(screen.texts())
+                if signature == last_signature:
+                    break
+                last_signature = signature
                 action = screen.find(*COLLECT_WORDS)
                 if action is None:
                     break
@@ -254,14 +263,14 @@ class AutomationEngine:
         while self._progress.runs < max_runs and not self._stopping:
             screen = await self._read(session_id)
             # 已经在一局里（例如手动玩到一半）就先打完，避免直接报错
-            if screen.find(STAGE_ENTRY) is None:
+            if screen.find_exact(STAGE_ENTRY) is None:
                 if self._in_run(screen):
                     self._log("info", "检测到进行中的一局，先完成当前关卡")
                     await self._play_run(session_id, skill_priority)
                     continue
                 await self._ensure_adventure(session_id)
                 screen = await self._read(session_id)
-            start = screen.find(STAGE_ENTRY)
+            start = screen.find_exact(STAGE_ENTRY)
             if start is None:
                 raise AutomationUnavailable("未找到「开始」按钮，请手动回到冒险页后重试")
             self._log("info", f"第 {self._progress.runs + 1} 轮推关：点击「开始」")
@@ -273,6 +282,7 @@ class AutomationEngine:
         idle_rounds = 0
         stuck = 0
         dig_index = 0
+        start_retries = 0
         last_action: str | None = None
         last_signature: str | None = None
         while not self._stopping and self._clock() < deadline:
@@ -287,10 +297,30 @@ class AutomationEngine:
                 await self._tap(session_id, finalize)
                 idle_rounds = 0
                 continue
+            # 仍停留在冒险页说明「开始」没点进去（可能被弹窗拦了），重试几次
+            start = screen.find_exact("开始")
+            if start is not None:
+                start_retries += 1
+                if start_retries > 3:
+                    self._log("warn", "多次点击「开始」仍未进入关卡，放弃本轮")
+                    return
+                self._log("warn", f"仍在冒险页，重新点击「开始」（第 {start_retries} 次）")
+                await self._tap(session_id, start)
+                idle_rounds = 0
+                continue
             if self._is_skill_modal(screen):
                 await self._pick_skills(session_id, screen, skill_priority)
                 idle_rounds = 0
                 continue
+            # 结算页：胜利/失败/生存天数，点返回结束本轮
+            if screen.has("胜利") or screen.has("失败") or screen.has("最高旅程"):
+                back = screen.find("返回主城", "再次挑战", "返回", "确定")
+                if back is not None:
+                    self._log("info", f"关卡结算：「{back.text}」")
+                    await self._tap(session_id, back)
+                    self._progress.runs += 1
+                    await self._back_to_adventure(session_id)
+                    return
             # 挖宝小游戏：逐格翻牌，翻完自动结束
             if screen.has(DIG_HINT):
                 cell = DIG_CELLS[dig_index % len(DIG_CELLS)]
@@ -331,6 +361,14 @@ class AutomationEngine:
                     await self._tap(session_id, option)
                     idle_rounds = 0
                     continue
+            # 「是否…？」契约类弹窗：两个选项在屏幕下方，优先选正向
+            if screen.has("是否"):
+                option = self._prompt_option(screen, min_cy=0.72)
+                if option is not None:
+                    self._log("info", f"契约选择：「{option.text}」")
+                    await self._tap(session_id, option)
+                    idle_rounds = 0
+                    continue
             action = screen.find(*STAGE_ACTIONS)
             if action is not None and stuck < 3:
                 text = action.text.strip()
@@ -364,15 +402,17 @@ class AutomationEngine:
                     return item
         return None
 
-    def _prompt_option(self, screen: Screen) -> OcrItem | None:
-        """「请选择一项…」弹窗里的候选项，取最上面一个"""
+    def _prompt_option(
+        self, screen: Screen, *, min_cy: float = 0.33
+    ) -> OcrItem | None:
+        """「请选择/是否…」弹窗里的候选项，优先正向选项，其次取最上面一个"""
         options: list[OcrItem] = []
         for item in screen.items:
             left, top, right, bottom = item.bounds
             cy = (top + bottom) / 2
             cx = (left + right) / 2
             text = item.text.strip()
-            if not (0.33 <= cy <= 0.78 and cx <= 0.80):
+            if not (min_cy <= cy <= 0.78 and cx <= 0.80):
                 continue
             if len(text) < 2 or len(text) > 6 or "。" in text or "请选择" in text:
                 continue
@@ -381,6 +421,10 @@ class AutomationEngine:
             if DAY_PATTERN.search(text):
                 continue
             options.append(item)
+        for preferred in ("签订", "接受", "同意", "继续", "领取"):
+            for item in options:
+                if preferred in item.text:
+                    return item
         options.sort(key=lambda entry: entry.bounds[1])
         return options[0] if options else None
 
@@ -389,6 +433,10 @@ class AutomationEngine:
         if self._is_skill_modal(screen):
             return True
         if any(DAY_PATTERN.search(item.text) for item in screen.items):
+            return True
+        if screen.has(DIG_HINT) or screen.find_exact(*WHEEL_TITLES) is not None:
+            return True
+        if screen.has("点击关闭"):
             return True
         return screen.find(*STAGE_ACTIONS) is not None or screen.find(*SETTLE_WORDS) is not None
 
@@ -403,6 +451,8 @@ class AutomationEngine:
                 continue
             if any(word in text for word in STAGE_ACTIONS + SETTLE_WORDS + ("开始", "冒险")):
                 continue
+            if text in SKILL_NON_CARDS or text.endswith("中"):
+                continue
             options.append(item)
         options.sort(key=lambda entry: (entry.bounds[1], entry.bounds[0]))
         return options[0] if options else None
@@ -415,13 +465,18 @@ class AutomationEngine:
         return any(item.text.strip() == SKILL_TITLE for item in screen.items)
 
     def _skill_cards(self, screen: Screen) -> list[OcrItem]:
+        # 卡片一定在「从下方选择一个技能」提示下方，避免把弹窗标题当成卡片
+        hint = screen.find_exact(SKILL_HINT)
+        min_cy = 0.30
+        if hint is not None:
+            min_cy = (hint.bounds[1] + hint.bounds[3]) / 2 + 0.015
         cards: list[OcrItem] = []
         for item in screen.items:
             left, top, right, bottom = item.bounds
             cy = (top + bottom) / 2
             cx = (left + right) / 2
             text = item.text.strip()
-            if not (0.30 <= cy <= 0.72 and cx <= 0.62):
+            if not (min_cy <= cy <= 0.78 and cx <= 0.62):
                 continue
             if len(text) < 2 or "。" in text:
                 continue
@@ -483,28 +538,41 @@ class AutomationEngine:
 
     async def _ensure_adventure(self, session_id: str) -> None:
         screen = await self._read(session_id)
-        if screen.has(STAGE_ENTRY):
+        if screen.find_exact(STAGE_ENTRY) is not None:
             return
         nav = screen.find("冒险")
         if nav is not None:
             await self._tap(session_id, nav)
-        else:
-            await self._adapter_getter().key(session_id, "back")
-            await self._sleep(1.2)
-        screen = await self._read(session_id)
-        if screen.has(STAGE_ENTRY):
+            screen = await self._read(session_id)
+            if screen.find_exact(STAGE_ENTRY) is not None:
+                return
+        if await self._back_to_adventure(session_id):
             return
         self._log("warn", "未能确认冒险页，将按当前界面继续尝试")
 
     async def _back_to_adventure(self, session_id: str) -> bool:
+        tried_arrow = False
+        tried_close = False
         back_pressed = False
-        for _ in range(4):
+        for _ in range(6):
             screen = await self._read(session_id)
-            if screen.has(STAGE_ENTRY):
+            if screen.find_exact(STAGE_ENTRY) is not None:
                 return True
             back = screen.find(*BACK_WORDS)
             if back is not None:
                 await self._tap(session_id, back)
+                continue
+            # 子页面通常在左下角有返回箭头
+            if not tried_arrow:
+                tried_arrow = True
+                await self._adapter_getter().tap(session_id, 0.098, 0.955, 80, 6)
+                await self._sleep(1.2)
+                continue
+            # 部分全屏子页面只有右上角关闭按钮
+            if not tried_close:
+                tried_close = True
+                await self._adapter_getter().tap(session_id, 0.932, 0.132, 80, 6)
+                await self._sleep(1.2)
                 continue
             if back_pressed:
                 break
