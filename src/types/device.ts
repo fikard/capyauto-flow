@@ -66,3 +66,20 @@ export interface UsersPayload {
   switchSupported: boolean;
   reason: string | null;
 }
+
+export interface AutomationLogPayload {
+  ts: number;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+}
+
+export interface AutomationPayload {
+  status: 'idle' | 'running' | 'completed' | 'stopped' | 'error';
+  task: 'daily' | 'stage' | 'all' | null;
+  sessionId: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  error: string | null;
+  progress: { runs: number; dailySteps: number };
+  logs: AutomationLogPayload[];
+}

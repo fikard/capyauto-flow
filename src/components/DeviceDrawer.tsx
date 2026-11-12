@@ -1,12 +1,22 @@
 import React from 'react';
-import { Play, ScanText, ShieldCheck, Square, Users, Wifi, WifiOff } from 'lucide-react';
-import type { OcrPayload, UsersPayload } from '../types/device';
+import {
+  Bot,
+  Play,
+  ScanText,
+  ShieldCheck,
+  Square,
+  Users,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
+import type { AutomationPayload, OcrPayload, UsersPayload } from '../types/device';
 
 interface DeviceDrawerProps {
   packageName: string;
   busy: boolean;
   users: UsersPayload | null;
   ocr: OcrPayload | null;
+  automation: AutomationPayload | null;
   onLaunch: () => void;
   onStop: () => void;
   onLoadUsers: () => void;
@@ -14,6 +24,8 @@ interface DeviceDrawerProps {
   onAirplane: (enable: boolean) => void;
   onOcr: () => void;
   onVerify: () => void;
+  onAutomationStart: (task: 'daily' | 'stage' | 'all') => void;
+  onAutomationStop: () => void;
   verifyResult: string | null;
 }
 
@@ -27,6 +39,7 @@ export const DeviceDrawer: React.FC<DeviceDrawerProps> = ({
   busy,
   users,
   ocr,
+  automation,
   onLaunch,
   onStop,
   onLoadUsers,
@@ -34,9 +47,13 @@ export const DeviceDrawer: React.FC<DeviceDrawerProps> = ({
   onAirplane,
   onOcr,
   onVerify,
+  onAutomationStart,
+  onAutomationStop,
   verifyResult,
 }) => {
   const switchDisabled = busy || !users || users.switchSupported === false;
+  const autoRunning = automation?.status === 'running';
+  const autoLogs = automation?.logs.slice(-6) ?? [];
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 content-start">
@@ -238,6 +255,93 @@ export const DeviceDrawer: React.FC<DeviceDrawerProps> = ({
                     <span className="font-mono text-[10px] text-emerald-400 shrink-0">
                       {item.confidence.toFixed(2)}
                     </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* 自动化 */}
+      <section className={`${CARD} sm:col-span-2`}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className={CARD_TITLE}>
+            <Bot className="w-3.5 h-3.5 text-amber-400" />
+            <span>自动化</span>
+          </h3>
+          <span
+            className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+              autoRunning
+                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                : automation?.status === 'error'
+                  ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-500'
+            }`}
+          >
+            {automation?.status ?? 'idle'}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => onAutomationStart('daily')}
+            disabled={busy || autoRunning}
+            className={`${ACTION} bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/60 hover:text-amber-400`}
+          >
+            自动日常
+          </button>
+          <button
+            type="button"
+            onClick={() => onAutomationStart('stage')}
+            disabled={busy || autoRunning}
+            className={`${ACTION} bg-amber-500 text-slate-950 border-amber-500 hover:bg-amber-400 disabled:hover:bg-amber-500`}
+          >
+            自动推关
+          </button>
+          <button
+            type="button"
+            onClick={() => onAutomationStart('all')}
+            disabled={busy || autoRunning}
+            className={`${ACTION} bg-slate-950 text-slate-300 border-slate-700 hover:border-sky-500/60 hover:text-sky-300`}
+          >
+            日常 + 推关
+          </button>
+          <button
+            type="button"
+            onClick={onAutomationStop}
+            disabled={!autoRunning}
+            className={`${ACTION} bg-slate-950 text-slate-300 border-slate-700 hover:border-rose-500/60 hover:text-rose-300`}
+          >
+            停止
+          </button>
+        </div>
+
+        {!automation ? (
+          <p className="text-[11px] text-slate-500">尚未启动自动化任务</p>
+        ) : (
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-mono text-slate-400">
+              推关 {automation.progress.runs} 轮 · 日常 {automation.progress.dailySteps} 步
+            </p>
+            {automation.error && (
+              <p className="text-[10px] text-rose-400 break-all">{automation.error}</p>
+            )}
+            {autoLogs.length > 0 && (
+              <ul className="space-y-1 max-h-32 overflow-y-auto">
+                {autoLogs.map((log, index) => (
+                  <li
+                    key={`${log.ts}_${index}`}
+                    className={`text-[10px] font-mono leading-snug ${
+                      log.level === 'error'
+                        ? 'text-rose-400'
+                        : log.level === 'warn'
+                          ? 'text-amber-400'
+                          : 'text-slate-400'
+                    }`}
+                  >
+                    {log.message}
                   </li>
                 ))}
               </ul>

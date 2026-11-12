@@ -1,4 +1,5 @@
 import type {
+  AutomationPayload,
   DeviceInfoPayload,
   HealthPayload,
   OcrPayload,
@@ -110,4 +111,16 @@ export const deviceClient = {
       method: 'POST',
       body: JSON.stringify({ sessionId }),
     }),
+  automationStatus: () => request<AutomationPayload>('/api/automation/status'),
+  automationStart: (
+    sessionId: string,
+    task: 'daily' | 'stage' | 'all',
+    maxRuns = 1,
+    skillPriorityList: string[] = []
+  ) =>
+    request<AutomationPayload>('/api/automation/start', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, task, maxRuns, skillPriorityList }),
+    }),
+  automationStop: () => request<AutomationPayload>('/api/automation/stop', { method: 'POST' }),
 };

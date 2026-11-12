@@ -100,3 +100,13 @@ class UserSwitchFailed(AdbError):
 class OcrUnavailable(ApiError):
     status_code = 503
     code = "OCR_UNAVAILABLE"
+
+
+class AutomationBusy(ApiError):
+    status_code = 409
+    code = "AUTOMATION_BUSY"
+
+
+class AutomationUnavailable(ApiError):
+    status_code = 503
+    code = "AUTOMATION_UNAVAILABLE"

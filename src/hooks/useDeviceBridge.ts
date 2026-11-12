@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DeviceApiError, deviceClient } from '../api/deviceClient';
 import type {
+  AutomationPayload,
   BridgeMode,
   DeviceInfoPayload,
   HealthPayload,
@@ -23,6 +24,7 @@ export function useDeviceBridge() {
   const [lastTap, setLastTap] = useState<TapPayload | null>(null);
   const [users, setUsers] = useState<UsersPayload | null>(null);
   const [ocr, setOcr] = useState<OcrPayload | null>(null);
+  const [automation, setAutomation] = useState<AutomationPayload | null>(null);
   const sessionRef = useRef<SessionPayload | null>(null);
   sessionRef.current = session;
   // 会话代际：每次连接尝试 / 断开都会自增，用于丢弃陈旧在途响应
@@ -175,6 +177,45 @@ export function useDeviceBridge() {
     return result;
   }, [run]);
 
+  const startAutomation = useCallback(
+    async (task: 'daily' | 'stage' | 'all', skillPriorityList: string[] = [], maxRuns = 1) => {
+      const current = sessionRef.current;
+      if (!current) return null;
+      const result = await run(() =>
+        deviceClient.automationStart(current.sessionId, task, maxRuns, skillPriorityList)
+      );
+      if (result) setAutomation(result);
+      return result;
+    },
+    [run]
+  );
+
+  const stopAutomation = useCallback(async () => {
+    const result = await run(() => deviceClient.automationStop());
+    if (result) setAutomation(result);
+    return result;
+  }, [run]);
+
+  // 自动化状态轮询：真机模式下每 2s 刷新一次，失败不打断主流程
+  useEffect(() => {
+    if (mode !== 'real') return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const result = await deviceClient.automationStatus();
+        if (alive) setAutomation(result);
+      } catch {
+        // 后端未就绪时静默跳过
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [mode]);
+
   useEffect(() => {
     if (mode === 'real') {
       refreshDevices();
@@ -183,8 +224,9 @@ export function useDeviceBridge() {
 
   return {
     mode, switchMode, health, devices, device, session, error, busy,
-    lastTap, users, ocr, connect, disconnect, tap,
+    lastTap, users, ocr, automation, connect, disconnect, tap,
     launchGame, stopGame, loadUsers, switchUser, toggleAirplane, runOcr,
+    startAutomation, stopAutomation,
     refreshDevices, defaultPackage: DEFAULT_PACKAGE,
   };
 }

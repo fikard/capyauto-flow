@@ -454,12 +454,18 @@ export default function App() {
                   busy={bridge.busy}
                   users={bridge.users}
                   ocr={bridge.ocr}
+                  automation={bridge.automation}
                   onLaunch={() => bridge.launchGame()}
                   onStop={() => bridge.stopGame()}
                   onLoadUsers={() => bridge.loadUsers()}
                   onSwitchUser={(id) => bridge.switchUser(id)}
                   onAirplane={(enable) => bridge.toggleAirplane(enable)}
                   onOcr={() => bridge.runOcr()}
+                  onAutomationStart={(task) => {
+                    addLog('INFO', 'AUTO', `启动自动化任务：${task}`);
+                    bridge.startAutomation(task, config.skillPriorityList);
+                  }}
+                  onAutomationStop={() => bridge.stopAutomation()}
                   onVerify={() => { addLog('INFO', 'VERIFY', '请在终端执行 npm run verify'); }}
                   verifyResult={null}
                 />

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -66,3 +68,10 @@ class OcrRequest(BaseModel):
         if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
             raise ValueError("region 需为 [left, top, right, bottom]，且 0<=left<right<=1、0<=top<bottom<=1")
         return value
+
+
+class AutomationStartRequest(BaseModel):
+    sessionId: str
+    task: Literal["daily", "stage", "all"] = "all"
+    maxRuns: int = Field(default=1, ge=1, le=10)
+    skillPriorityList: list[str] = Field(default_factory=list, max_length=50)
