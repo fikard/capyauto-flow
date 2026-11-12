@@ -46,6 +46,15 @@ def test_ocr_image_without_region_maps_to_full_image_coordinates():
     assert items[0].bounds == (0.1, 0.1, 0.5, 0.2)
 
 
+def test_ocr_image_keeps_knowledge_annotations():
+    def fake_engine(_array):
+        return ([(_box(10, 20, 50, 40), "神话", 0.95)], None)
+
+    image = Image.new("RGB", (100, 200), (0, 0, 0))
+    items = ocr_image(image, engine=fake_engine)
+    assert items[0].rarity == "神话"
+
+
 def test_ocr_image_empty_result_returns_empty_list():
     image = Image.new("RGB", (10, 10))
     assert ocr_image(image, engine=lambda _: (None, None)) == []

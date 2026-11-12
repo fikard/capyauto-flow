@@ -53,6 +53,24 @@ def _load_json_cached(path: str):
 _ui_attr_index = _load_json_cached(os.path.join(_KNOWLEDGE_ROOT, "ocr_attr_index.json"))
 
 
+def _load_treasure_names() -> dict[str, tuple[str | None, str | None]]:
+    """秘宝名 → (kind, rarity)，用于英雄/藏品界面只显示名称时的标注"""
+    raw = _load_json_cached(os.path.join(_KNOWLEDGE_ROOT, "treasures.json"))
+    if not raw:
+        return {}
+    return {
+        str(row["name"]): (row.get("kindName"), row.get("rarity"))
+        for row in raw
+        if row.get("name")
+    }
+
+
+# 按名称长度降序，避免「圣杯」先于「圣杯战争」之类的短名误匹配
+_treasure_names = dict(
+    sorted(_load_treasure_names().items(), key=lambda kv: len(kv[0]), reverse=True)
+)
+
+
 @dataclass(frozen=True)
 class OcrItem:
     text: str
@@ -78,6 +96,13 @@ def _annotate_item(text: str) -> tuple[str | None, str | None, str | None]:
             kind = val
             break
 
+    # 秘宝名称命中：接口只画名称（英雄/藏品界面），名称本身可带出 kind/rarity
+    if kind is None and rarity is None:
+        for name, (name_kind, name_rarity) in _treasure_names.items():
+            if name in text:
+                kind, rarity = name_kind, name_rarity
+                break
+
     # ui_attr_index：中文术语 → 英文字段键。首个命中的键即 lexicon_ref
     if _ui_attr_index:
         for cn_term, en_key in _ui_attr_index.items():
@@ -88,7 +113,7 @@ def _annotate_item(text: str) -> tuple[str | None, str | None, str | None]:
 
 
 def _annotate_items(items: list[OcrItem]) -> list[OcrItem]:
-    if not _ui_attr_index:  # 知识库没加载就跳过，保持向后兼容
+    if not _ui_attr_index and not _treasure_names:  # 知识库没加载就跳过，保持向后兼容
         return items
     annotated: list[OcrItem] = []
     for item in items:
@@ -177,6 +202,9 @@ def ocr_image(image: Image.Image, engine=None, region=None) -> list[OcrItem]:
                 (item.bounds[2] * crop_width + offset_x) / width,
                 (item.bounds[3] * crop_height + offset_y) / height,
             ),
+            kind=item.kind,
+            rarity=item.rarity,
+            lexicon_ref=item.lexicon_ref,
         )
         for item in normalize_result(result, crop_width, crop_height)
     ]
