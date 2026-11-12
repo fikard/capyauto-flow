@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import importlib.util
 import io
 import json
@@ -71,6 +72,17 @@ _treasure_names = dict(
 )
 
 
+def _load_adventurer_names() -> tuple[str, ...]:
+    """英雄（冒险者）名，用于英雄界面只显示名称时的 kind 标注"""
+    raw = _load_json_cached(os.path.join(_KNOWLEDGE_ROOT, "adventurers.json"))
+    if not raw:
+        return ()
+    return tuple(sorted((str(row["name"]) for row in raw if row.get("name")), key=len, reverse=True))
+
+
+_adventurer_names = _load_adventurer_names()
+
+
 @dataclass(frozen=True)
 class OcrItem:
     text: str
@@ -80,6 +92,21 @@ class OcrItem:
     kind: str | None = None
     rarity: str | None = None
     lexicon_ref: str | None = None
+
+
+def _fuzzy_treasure(text: str) -> tuple[str | None, str | None]:
+    """OCR 漏字时的兜底：如「仁王胴具足」被识别成「仁王具足」"""
+    if len(text) < 4:
+        return None
+    best: tuple[str | None, str | None] | None = None
+    best_ratio = 0.0
+    for name, meta in _treasure_names.items():
+        if abs(len(name) - len(text)) > 2:
+            continue
+        ratio = difflib.SequenceMatcher(None, text, name).ratio()
+        if ratio > best_ratio:
+            best, best_ratio = meta, ratio
+    return best if best_ratio >= 0.85 else None
 
 
 def _annotate_item(text: str) -> tuple[str | None, str | None, str | None]:
@@ -102,6 +129,17 @@ def _annotate_item(text: str) -> tuple[str | None, str | None, str | None]:
             if name in text:
                 kind, rarity = name_kind, name_rarity
                 break
+        else:
+            fuzzy = _fuzzy_treasure(text)
+            if fuzzy:
+                kind, rarity = fuzzy
+
+    # 英雄名命中：英雄界面只显示名称，kind 用「冒险者」区分
+    if kind is None and rarity is None:
+        for name in _adventurer_names:
+            if name in text:
+                kind = "冒险者"
+                break
 
     # ui_attr_index：中文术语 → 英文字段键。首个命中的键即 lexicon_ref
     if _ui_attr_index:
@@ -113,7 +151,7 @@ def _annotate_item(text: str) -> tuple[str | None, str | None, str | None]:
 
 
 def _annotate_items(items: list[OcrItem]) -> list[OcrItem]:
-    if not _ui_attr_index and not _treasure_names:  # 知识库没加载就跳过，保持向后兼容
+    if not _ui_attr_index and not _treasure_names and not _adventurer_names:  # 知识库没加载就跳过，保持向后兼容
         return items
     annotated: list[OcrItem] = []
     for item in items:

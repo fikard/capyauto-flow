@@ -58,3 +58,21 @@ def test_ocr_image_keeps_knowledge_annotations():
 def test_ocr_image_empty_result_returns_empty_list():
     image = Image.new("RGB", (10, 10))
     assert ocr_image(image, engine=lambda _: (None, None)) == []
+
+
+def test_annotate_marks_adventurer_name(monkeypatch):
+    from app.vision import ocr
+
+    monkeypatch.setattr(ocr, "_adventurer_names", ("小龙女",))
+    monkeypatch.setattr(ocr, "_treasure_names", {})
+    monkeypatch.setattr(ocr, "_ui_attr_index", None)
+    assert ocr._annotate_item("小龙女") == ("冒险者", None, None)
+
+
+def test_annotate_fuzzy_matches_truncated_treasure_name(monkeypatch):
+    from app.vision import ocr
+
+    monkeypatch.setattr(ocr, "_adventurer_names", ())
+    monkeypatch.setattr(ocr, "_treasure_names", {"仁王胴具足": ("守护", "神话")})
+    monkeypatch.setattr(ocr, "_ui_attr_index", None)
+    assert ocr._annotate_item("仁王具足") == ("守护", "神话", None)
