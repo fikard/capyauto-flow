@@ -14,9 +14,11 @@ from pathlib import Path
 from PIL import Image
 
 from app import config
+from app.deps import build_launcher_spec
 from app.device import packages
 from app.device.adb import AdbRunner
 from app.device.adb_device import AdbScrcpyDevice
+from app.device.packages import LauncherSpec
 from app.errors import ApiError
 from app.vision.ocr import engine_available, ocr_png
 
@@ -81,8 +83,16 @@ def render_markdown(results: list[CheckResult], *, serial: str, started: str) ->
 
 
 class VerifyContext:
-    def __init__(self, serial: str, package: str, activity: str | None, out_dir: Path) -> None:
+    def __init__(
+        self,
+        serial: str,
+        package: str,
+        activity: str | None,
+        out_dir: Path,
+        launcher: LauncherSpec | None = None,
+    ) -> None:
         settings = config.settings
+        self.launcher = launcher if launcher is not None else build_launcher_spec(settings)
         self.adb = AdbRunner(settings.adb_path)
         self.serial = serial
         self.package = package
@@ -102,6 +112,7 @@ class VerifyContext:
             frame_timeout=settings.frame_timeout,
             allow_fallback=settings.allow_screencap_fallback,
             game_package=package,
+            launcher=self.launcher,
         )
         self.session_id: str | None = None
 
@@ -112,9 +123,15 @@ class VerifyContext:
         return self.session_id
 
     def launch(self) -> tuple[str | None, int | None]:
-        # 适配器 launch_app 不接受 activity，这里直接复用其底层实现以尊重 --activity 配置
+        # 适配器 launch_app 不接受 activity，这里直接复用其底层实现以尊重 --activity 配置。
+        # 走桌面快捷方式时 --activity 不适用（沙箱 Activity 由变速器决定）。
         return packages.launch_app(
-            self.adb, self.serial, self.package, activity=self.activity, user=0
+            self.adb,
+            self.serial,
+            self.package,
+            activity=self.activity,
+            user=0,
+            launcher=self.launcher,
         )
 
     def save_png(self, check_id: str, png: bytes) -> str:
@@ -482,6 +499,7 @@ async def run_checks(
     activity: str | None,
     out_dir: Path,
     skip: set[str],
+    launcher: LauncherSpec | None = None,
 ) -> tuple[str, list[CheckResult], bool]:
     """返回 (实际使用的 serial, 检查结果, 该 serial 是否在线)。"""
     adb = AdbRunner(config.settings.adb_path)
@@ -493,7 +511,7 @@ async def run_checks(
     except Exception as exc:  # noqa: BLE001 - adb 不可用时仍要出报告
         probe_error = f"{type(exc).__name__}: {exc}"
     serial_online = is_serial_online(chosen, online)
-    ctx = VerifyContext(chosen, package, activity, out_dir)
+    ctx = VerifyContext(chosen, package, activity, out_dir, launcher)
     results: list[CheckResult] = []
     try:
         for check_id, check in CHECKS.items():
@@ -552,12 +570,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--activity", default=config.settings.game_activity)
     parser.add_argument("--out", default="reports")
     parser.add_argument("--skip", default="", help="逗号分隔的检查项，如 V9,V10")
+    parser.add_argument(
+        "--launch-mode",
+        choices=("auto", "package", "launcher"),
+        default=None,
+        help="auto=装了冲鸭变速器就点桌面快捷方式；package=直启游戏包；launcher=强制点桌面图标",
+    )
     args = parser.parse_args(argv)
     started_at = datetime.now().isoformat(timespec="seconds")
     skip = {item.strip().upper() for item in args.skip.split(",") if item.strip()}
-    serial, results, serial_online = asyncio.run(
-        run_checks(args.serial, args.package, args.activity, Path(args.out), skip)
-    )
+    launcher = None
+    if args.launch_mode:
+        launcher = build_launcher_spec(dataclasses.replace(config.settings, launch_mode=args.launch_mode))
+    check_args = (args.serial, args.package, args.activity, Path(args.out), skip)
+    if launcher is None:
+        serial, results, serial_online = asyncio.run(run_checks(*check_args))
+    else:
+        serial, results, serial_online = asyncio.run(run_checks(*check_args, launcher=launcher))
     json_path, md_path = write_reports(results, serial, Path(args.out), started_at)
     print(f"报告：{json_path} / {md_path}")
     return 0 if serial_online and summarize(results)["ok"] else 1

@@ -1,6 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Video } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Video } from 'lucide-react';
 import { buildMirrorUrl, isTapInside, toNormalized } from '../api/deviceClient';
+import {
+  metaSizeMismatch,
+  parseMirrorText,
+  reconnectDelay,
+  type MirrorMeta,
+} from '../core/mirrorStream';
 import type { SessionPayload, TapPayload } from '../types/device';
 
 interface DeviceMirrorProps {
@@ -12,12 +18,13 @@ interface DeviceMirrorProps {
 
 const MAX_DISPLAY_WIDTH = 360;
 
-type StreamStatus = 'idle' | 'connecting' | 'live' | 'closed' | 'error';
+type StreamStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'closed' | 'error';
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
   idle: '未连接',
   connecting: '连接中',
   live: '实时',
+  reconnecting: '重连中',
   closed: '已断开',
   error: '异常',
 };
@@ -34,107 +41,166 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [disconnected, setDisconnected] = useState(false);
   const [hasFrame, setHasFrame] = useState(false);
+  const [meta, setMeta] = useState<MirrorMeta | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const [reconnectToken, setReconnectToken] = useState(0);
+  const lastSessionRef = useRef<string | null>(null);
 
   const sessionId = session?.sessionId ?? null;
   const deviceWidth = session?.width ?? 0;
   const deviceHeight = session?.height ?? 0;
 
   useEffect(() => {
-    hasFrameRef.current = false;
-    setHasFrame(false);
-    setDisconnected(false);
+    // 只有切换会话才清空画面；自动/手动重连保留最后一帧，避免闪黑
+    if (lastSessionRef.current !== sessionId) {
+      lastSessionRef.current = sessionId;
+      hasFrameRef.current = false;
+      setHasFrame(false);
+      setMeta(null);
+      setRetryCount(0);
+    }
 
     if (!sessionId || !deviceWidth || !deviceHeight) {
       setStatus('idle');
       setStreamError(null);
+      setDisconnected(false);
       return;
     }
 
     let cancelled = false;
-    setStatus('connecting');
+    let socket: WebSocket | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    let attempt = 0;
+
     setStreamError(null);
     setDisconnected(false);
 
-    const ws = new WebSocket(buildMirrorUrl(sessionId));
-    ws.binaryType = 'blob';
+    function scheduleReconnect() {
+      if (cancelled || retryTimer) return;
+      const delay = reconnectDelay(attempt);
+      attempt += 1;
+      setRetryCount(attempt);
+      setStatus('reconnecting');
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        openSocket();
+      }, delay);
+    }
 
-    ws.onopen = () => {
+    function openSocket() {
       if (cancelled) return;
-      setStatus('live');
-      setStreamError(null);
-      setDisconnected(false);
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      if (cancelled) return;
-
-      if (typeof event.data === 'string') {
-        try {
-          const payload = JSON.parse(event.data) as {
-            type?: string;
-            message?: string;
-            code?: string;
-          };
-          if (payload?.type === 'error') {
-            // 断流错误帧：保留原始信息作为副标题，但「连接已断开」提示必须出现
-            setStreamError(payload.message ?? payload.code ?? '镜像流返回错误');
-            setDisconnected(true);
-            setStatus('error');
-          }
-        } catch {
-          // 非 JSON 文本帧忽略
-        }
-        return;
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
       }
+      setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
+      const ws = new WebSocket(buildMirrorUrl(sessionId as string));
+      socket = ws;
+      ws.binaryType = 'blob';
 
-      const blob = event.data instanceof Blob ? event.data : null;
-      if (!blob) return;
+      ws.onopen = () => {
+        if (cancelled) return;
+        setStatus('live');
+        setStreamError(null);
+        setDisconnected(false);
+      };
 
-      createImageBitmap(blob)
-        .then((bitmap) => {
-          // 帧可能在 close 前入队：连接已关闭时丢弃迟到帧，不得覆盖 onclose 的断流状态
-          if (cancelled || ws.readyState !== WebSocket.OPEN) {
-            bitmap.close();
+      ws.onmessage = (event: MessageEvent) => {
+        if (cancelled) return;
+
+        if (typeof event.data === 'string') {
+          const frame = parseMirrorText(event.data);
+          if (frame.kind === 'meta') {
+            // meta 是后端每 5 帧推一次的链路心跳：seq / 分辨率 / fps / 降级状态都在这里消费
+            attempt = 0;
+            setRetryCount((prev) => (prev === 0 ? prev : 0));
+            setMeta(frame.meta);
             return;
           }
-          const canvas = canvasRef.current;
-          const ctx = canvas?.getContext('2d');
-          if (canvas && ctx) {
-            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-            if (!hasFrameRef.current) {
-              hasFrameRef.current = true;
-              setHasFrame(true);
-            }
-            // 收到新帧 = 连接恢复，清除瞬时错误状态，避免永久锁死交互
-            setStreamError((prev) => (prev ? null : prev));
-            setDisconnected((prev) => (prev ? false : prev));
+          if (frame.kind === 'error') {
+            setStreamError(frame.error.message ?? frame.error.code ?? '镜像流返回错误');
+            setDisconnected(true);
+            setStatus('error');
+            // 主动关闭，交给 onclose 统一走退避重连
+            ws.close();
           }
-          bitmap.close();
-        })
-        .catch(() => {
-          if (!cancelled) setStreamError('镜像帧解码失败');
-        });
-    };
+          return;
+        }
 
-    ws.onerror = () => {
-      if (cancelled) return;
-      setStreamError('镜像流连接异常');
-      setStatus('error');
-    };
+        const blob = event.data instanceof Blob ? event.data : null;
+        if (!blob) return;
 
-    ws.onclose = () => {
-      // 保留最后一帧，仅提示重连
-      if (!cancelled) {
-        setStatus((prev) => (prev === 'error' ? 'error' : 'closed'));
+        createImageBitmap(blob)
+          .then((bitmap) => {
+            // 帧可能在 close 前入队：连接已关闭时丢弃迟到帧，不得覆盖断流状态
+            if (cancelled || ws.readyState !== WebSocket.OPEN) {
+              bitmap.close();
+              return;
+            }
+            const canvas = canvasRef.current;
+            const ctx = canvas?.getContext('2d');
+            if (canvas && ctx) {
+              ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+              if (!hasFrameRef.current) {
+                hasFrameRef.current = true;
+                setHasFrame(true);
+              }
+              // 收到新帧 = 链路是活的，清零退避并清除瞬时错误
+              attempt = 0;
+              setRetryCount((prev) => (prev === 0 ? prev : 0));
+              setStatus((prev) => (prev === 'live' ? prev : 'live'));
+              setStreamError((prev) => (prev ? null : prev));
+              setDisconnected((prev) => (prev ? false : prev));
+            }
+            bitmap.close();
+          })
+          .catch(() => {
+            if (!cancelled) setStreamError('镜像帧解码失败');
+          });
+      };
+
+      ws.onerror = () => {
+        if (cancelled) return;
+        setStreamError('镜像流连接异常');
+        setStatus('error');
+      };
+
+      ws.onclose = () => {
+        if (cancelled) return;
+        setStatus('closed');
         setDisconnected(true);
-      }
-    };
+        scheduleReconnect();
+      };
+
+      // 后端 pump_client 会回 pong；定期发 ping 防止中间代理掐掉空闲连接
+      heartbeat = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          } catch {
+            // 发送失败由 onclose 接管
+          }
+        }
+      }, 15000);
+    }
+
+    openSocket();
 
     return () => {
       cancelled = true;
-      ws.close();
+      if (retryTimer) clearTimeout(retryTimer);
+      if (heartbeat) clearInterval(heartbeat);
+      if (socket) {
+        socket.onclose = null;
+        try {
+          socket.close();
+        } catch {
+          // 已处于 CLOSING/CLOSED 时忽略
+        }
+      }
     };
-  }, [sessionId, deviceWidth, deviceHeight]);
+  }, [sessionId, deviceWidth, deviceHeight, reconnectToken]);
 
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (!session) return;
@@ -169,17 +235,31 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
           <Video className="w-4 h-4 text-amber-400" />
           <h3 className="text-sm font-bold text-slate-100">真机镜像</h3>
         </div>
-        <span
-          className={`px-2 py-0.5 rounded border text-[10px] font-mono tracking-wider ${
-            status === 'live'
-              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-              : status === 'error'
-                ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                : 'bg-slate-950 text-slate-400 border-slate-800'
-          }`}
-        >
-          {STATUS_LABEL[status]}
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            className={`px-2 py-0.5 rounded border text-[10px] font-mono tracking-wider ${
+              status === 'live'
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                : status === 'error'
+                  ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                  : status === 'reconnecting'
+                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                    : 'bg-slate-950 text-slate-400 border-slate-800'
+            }`}
+          >
+            {STATUS_LABEL[status]}{status === 'reconnecting' && retryCount > 0 ? ` #${retryCount}` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={() => setReconnectToken((token) => token + 1)}
+            disabled={!session}
+            title="跳过退避，立即重建镜像连接"
+            className="flex items-center gap-1 px-2 py-0.5 rounded border border-slate-700 text-[10px] font-mono text-slate-300 hover:border-amber-500/60 hover:text-amber-400 cursor-pointer disabled:opacity-40"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>立即重连</span>
+          </button>
+        </div>
       </div>
 
       {session ? (
@@ -237,7 +317,7 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
           {disconnected && !hasFrame && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/80 p-4 text-center">
               <AlertTriangle className="w-5 h-5 text-rose-400" />
-              <span className="text-[11px] font-mono text-amber-400">连接已断开，点击刷新重连</span>
+              <span className="text-[11px] font-mono text-amber-400">镜像断流 · 自动重连中（第 {retryCount} 次，点「立即重连」可跳过退避）</span>
               {streamError && (
                 <span className="text-[10px] font-mono text-rose-300 break-all">{streamError}</span>
               )}
@@ -246,7 +326,7 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
 
           {disconnected && hasFrame && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-0.5 py-1.5 bg-slate-950/85 border-t border-slate-800">
-              <span className="text-[11px] font-mono text-amber-400">连接已断开，点击刷新重连</span>
+              <span className="text-[11px] font-mono text-amber-400">镜像断流 · 自动重连中（第 {retryCount} 次，点「立即重连」可跳过退避）</span>
               {streamError && (
                 <span className="px-2 text-center text-[10px] font-mono text-rose-300 break-all">
                   {streamError}
@@ -266,16 +346,33 @@ export const DeviceMirror: React.FC<DeviceMirrorProps> = ({
           className="mx-auto w-full h-40 rounded-lg border border-dashed border-slate-800 bg-slate-950 flex items-center justify-center px-4 text-center"
           style={{ maxWidth: `${MAX_DISPLAY_WIDTH}px` }}
         >
-          <span className="text-[11px] font-mono text-slate-500">尚未连接设备，点击刷新重连</span>
+          <span className="text-[11px] font-mono text-slate-500">尚未连接设备，请在顶栏切到「真机」并建立会话</span>
         </div>
       )}
 
-      <div className="mt-3 flex items-center justify-between text-[10px] font-mono text-slate-500 gap-2">
-        <span>点击画布注入真机触摸</span>
-        {session && (
-          <span>
-            {deviceWidth}×{deviceHeight} · {session.fps} fps · {session.mode}
-          </span>
+      <div className="mt-3 space-y-0.5 text-[10px] font-mono text-slate-500">
+        <div className="flex items-center justify-between gap-2">
+          <span>点击画布注入真机触摸</span>
+          {session && (
+            <span>
+              {deviceWidth}×{deviceHeight} · {session.fps} fps · {session.mode}
+            </span>
+          )}
+        </div>
+        {meta && (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className={meta.degraded ? 'text-amber-400' : 'text-slate-500'}>
+              meta seq {meta.seq} · {meta.width}×{meta.height} · {meta.fps} fps · {meta.mode}
+              {meta.degraded ? ' · 已降级' : ''}
+            </span>
+            <span>
+              meta 距今 {Math.max(0, Math.round(Date.now() - meta.ts * 1000))}ms
+              {retryCount > 0 ? ` · 重连 ${retryCount} 次` : ''}
+            </span>
+          </div>
+        )}
+        {meta && metaSizeMismatch(meta, deviceWidth, deviceHeight) && (
+          <p className="text-amber-400">画布尺寸与设备分辨率不一致，点击落点可能有偏差，建议重建会话</p>
         )}
       </div>
     </div>

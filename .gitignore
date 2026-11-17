@@ -11,7 +11,16 @@ __pycache__/
 .pytest_cache/
 reports/
 .screenshots/
+.run/
+backend/.data/
+.devgate/
+.trae/
+.workbuddy/
+.claude/
 
 # 卡皮知识库（从 moo-capybara-db.netlify.app 抓取生成）
 capy-db-raw/
 capy-knowledge/
+
+# AutoX 端侧本地配置（含机器相关 LAN IP，由 scripts/gen-autox-config.sh 生成）
+autox/config.local.json

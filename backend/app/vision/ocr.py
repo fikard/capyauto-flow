@@ -189,7 +189,7 @@ def get_engine():
             _engine = RapidOCR(
                 # 游戏截图固定正向，关闭 180° 方向分类可省一次分类推理
                 use_cls=False,
-                intra_op_num_threads=min(os.cpu_count() or 4, _MAX_INFERENCE_THREADS),
+                intra_op_num_threads=int(os.environ.get("CAPYAUTO_OCR_THREADS", "1")),
             )
     return _engine
 

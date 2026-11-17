@@ -6,6 +6,13 @@ def test_health_mock(client):
     assert body["device_backend"] == "mock"
 
 
+def test_devgate_frontend_origin_allowed(client):
+    origin = "http://frontend.capyauto-flow.test"
+    resp = client.get("/api/health", headers={"Origin": origin})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == origin
+
+
 def test_list_devices(client):
     resp = client.get("/api/devices")
     assert resp.status_code == 200

@@ -46,6 +46,31 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
+def _env_launch_mode() -> str:
+    raw = (os.environ.get("CAPYAUTO_LAUNCH_MODE") or "auto").strip().lower()
+    if raw not in {"auto", "package", "launcher"}:
+        raise SystemExit(
+            f"环境变量 CAPYAUTO_LAUNCH_MODE 只能是 auto|package|launcher，实际为 {raw!r}"
+        )
+    return raw
+
+
+def _env_point(name: str) -> tuple[float, float] | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    parts = [item.strip() for item in raw.split(",")]
+    if len(parts) != 2:
+        raise SystemExit(f"环境变量 {name} 必须是 'x,y' 两个归一化坐标，实际为 {raw!r}")
+    try:
+        x, y = float(parts[0]), float(parts[1])
+    except ValueError as exc:
+        raise SystemExit(f"环境变量 {name} 必须是数字，实际为 {raw!r}") from exc
+    if not (0 < x < 1 and 0 < y < 1):
+        raise SystemExit(f"环境变量 {name} 的 x/y 必须都在 (0,1) 之间，实际为 {raw!r}")
+    return x, y
+
+
 def _cellar_version_key(path: Path) -> tuple[int, ...]:
     version = path.parents[2].name
     return tuple(int(part) for part in version.split(".") if part.isdigit())
@@ -98,6 +123,22 @@ class Settings:
             "CAPYAUTO_GAME_ACTIVITY", "com.habby.sdkhubv2.ui.GameStartNativeUIActivty"
         )
         or None
+    )
+    # 真机上游戏跑在「冲鸭变速器」沙箱里：桌面「冒险者日记」是它发布的快捷方式，
+    # 其启动 Activity 未导出，shell 无法 am start 复现，只能由 Launcher 点击图标。
+    # auto = 检测到宿主包已安装就走桌面快捷方式；package = 保持旧版直启；launcher = 强制走桌面。
+    launch_mode: str = field(default_factory=_env_launch_mode)
+    launcher_host_package: str = field(
+        default_factory=lambda: os.environ.get("CAPYAUTO_LAUNCHER_HOST_PACKAGE", "com.joke.chongya")
+    )
+    launcher_icon_label: str = field(
+        default_factory=lambda: os.environ.get("CAPYAUTO_LAUNCHER_ICON_LABEL", "冒险者日记")
+    )
+    launcher_icon_point: tuple[float, float] | None = field(
+        default_factory=lambda: _env_point("CAPYAUTO_LAUNCHER_ICON_POINT")
+    )
+    launcher_wait_s: float = field(
+        default_factory=lambda: _env_float("CAPYAUTO_LAUNCHER_WAIT_S", 30.0)
     )
 
 

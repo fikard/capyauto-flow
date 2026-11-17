@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import random
 import re
 import socket
@@ -187,7 +188,7 @@ class ScrcpySession:
                 f"CLASSPATH={remote} app_process / com.genymobile.scrcpy.Server {self._server_version} "
                 f"log_level=info tunnel_forward=true audio=false video=true control=true "
                 f"scid={self._scid} send_dummy_byte=false "
-                f"max_fps={self._fps} video_bit_rate={self._bitrate} max_size=0 cleanup=true"
+                f"max_fps={self._fps} video_bit_rate={self._bitrate} max_size={int(os.environ.get('CAPYAUTO_SCRCPY_MAX_SIZE', '1280'))} cleanup=true"
             )
             self._server = self._adb.popen_shell(self.serial, command)
             # server 必须等 video 与 control 两个 socket 都 accept 后才发 76 字节元数据；

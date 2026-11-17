@@ -63,7 +63,35 @@ export interface LogMessage {
   message: string;
 }
 
-export interface PipelineConfig {
+/** 归一化 OCR 区域：[left, top, right, bottom]，取值 0–1，null 表示全屏 */
+export type OcrRegion = [number, number, number, number];
+
+/**
+ * 真机自动化参数。字段与 backend/app/schemas.py::AutomationStartRequest 对齐，
+ * 由界面统一维护并持久化，不再散落在 useDeviceBridge 的局部 state 里。
+ */
+export interface AutomationConfig {
+  /** 速度倍数：<1 加速（0.5 = 两倍速），1.0 正常 */
+  speed: number;
+  towerFloors: number;
+  maxStageFails: number;
+  travelStamina: number;
+  stageMode: 'full' | 'lean';
+  fastStageCheckEvery: number;
+  /** 本次运行归属账号，留空由主城画面识别 */
+  account: string;
+  /** 账号队列（account_sweep 按顺序执行） */
+  accountQueue: string[];
+  serverFrom: string;
+  serverTo: string;
+  serverDryRun: boolean;
+  allowGemTalentBreakthrough: boolean;
+  /** 最大循环数，0 = 不限 */
+  maxRuns: number;
+  ocrRegion: OcrRegion | null;
+}
+
+export interface PipelineConfig extends AutomationConfig {
   skillPriorityList: string[];
   gaussianStdev: number;
   pressDurationMean: number;

@@ -8,7 +8,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import config
-from app.api import app_control, automation, control, devices, health, mirror, network, vision
+from app.api import (
+    accounts,
+    app_control,
+    automation,
+    control,
+    devices,
+    health,
+    mirror,
+    network,
+    verify_run,
+    vision,
+)
 from app.errors import ApiError
 
 app = FastAPI(title="CapyAuto Flow Device Bridge", version="0.1.0")
@@ -18,6 +29,7 @@ app.add_middleware(
     allow_origins=[
         f"http://localhost:{config.settings.frontend_port}",
         f"http://127.0.0.1:{config.settings.frontend_port}",
+        "http://frontend.capyauto-flow.test",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -38,6 +50,8 @@ app.include_router(app_control.router)
 app.include_router(network.router)
 app.include_router(vision.router)
 app.include_router(automation.router)
+app.include_router(accounts.router)
+app.include_router(verify_run.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

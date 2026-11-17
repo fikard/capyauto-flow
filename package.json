@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=${CAPYAUTO_FRONTEND_PORT:-5178} --host 0.0.0.0",
+    "dev": "VITE_BACKEND_URL=http://127.0.0.1:${CAPYAUTO_BACKEND_PORT:-8084} vite --port=${CAPYAUTO_FRONTEND_PORT:-5178} --host 0.0.0.0",
     "backend": "cd backend && .venv/bin/python -m app",
     "test:backend": "cd backend && .venv/bin/python -m pytest -q",
     "verify": "cd backend && .venv/bin/python -m app.verify",

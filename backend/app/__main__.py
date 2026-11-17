@@ -18,6 +18,7 @@ def port_busy(port: int) -> bool:
     if not 1 <= port <= 65535:
         raise _invalid_port(port)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OverflowError as exc:

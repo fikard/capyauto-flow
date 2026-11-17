@@ -1,14 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   FsmState,
   AccountItem,
-  PipelineConfig,
   LogMessage,
   TouchEventRecord,
 } from './types/pipeline';
 import { PhoneSimulator } from './components/PhoneSimulator';
 import { FsmVisualizer } from './components/FsmVisualizer';
-import { AccountMatrix } from './components/AccountMatrix';
+import { AccountMatrix, RealAccountMatrix } from './components/AccountMatrix';
 import { CodeRepository } from './components/CodeRepository';
 import { SkillPriorityStudio } from './components/SkillPriorityStudio';
 import { AntiBanTelemetry } from './components/AntiBanTelemetry';
@@ -18,6 +17,8 @@ import { DeviceBar } from './components/DeviceBar';
 import { DeviceMirror } from './components/DeviceMirror';
 import { DeviceDrawer } from './components/DeviceDrawer';
 import { useDeviceBridge } from './hooks/useDeviceBridge';
+import { usePipelineConfig } from './hooks/usePipelineConfig';
+import { DEMO_ACCOUNTS } from './data/demoAccounts';
 import {
   Cpu,
   Layers,
@@ -44,87 +45,12 @@ export default function App() {
   const [isResettingIp, setIsResettingIp] = useState<boolean>(false);
   const [interceptedCount, setInterceptedCount] = useState<number>(3);
 
-  // Configuration
-  const [config, setConfig] = useState<PipelineConfig>({
-    // 技能优先级初始为空，由 SkillPriorityStudio 从知识库建议中补入；
-    // 历史硬编码项见 scriptFiles.ts，已去除以便与知识库动态对齐
-    skillPriorityList: [],
-    gaussianStdev: 6,
-    pressDurationMean: 80,
-    pressDurationStdev: 20,
-    reactionMinDelay: 400,
-    reactionMaxDelay: 850,
-    enableAirplaneModeIpReset: true,
-    enableScreenDarkening: true,
-    enableWatchdogThread: true,
-    autoSweepDaily: true,
-    maxDailyBoatTickets: 5,
-    maxDefeatRetries: 2,
-  });
+  // 全应用唯一配置源：仿真参数 + 真机自动化参数，自动持久化到 localStorage
+  const { config, setConfig, patchAutomation, resetConfig } = usePipelineConfig();
 
-  // Multi-account list
-  const [accounts, setAccounts] = useState<AccountItem[]>([
-    {
-      id: 'main_01',
-      name: '主力大号 (主空间)',
-      type: 'clone_user_0',
-      userId: 0,
-      doneToday: false,
-      stamina: 85,
-      maxStamina: 100,
-      boatTicketsDonated: 2,
-      goldDonatedTimes: 3,
-      currentStage: '第 32 章 · 沼泽巨石阵',
-      lastRunTime: '11:20:00',
-      ipResetCount: 1,
-      enabled: true,
-    },
-    {
-      id: 'alt_island_02',
-      name: '公会供票小号 A (Island 999)',
-      type: 'clone_user_999',
-      userId: 999,
-      doneToday: true,
-      stamina: 15,
-      maxStamina: 100,
-      boatTicketsDonated: 4,
-      goldDonatedTimes: 3,
-      currentStage: '第 24 章 · 迷雾森林',
-      lastRunTime: '10:45:12',
-      ipResetCount: 2,
-      enabled: true,
-    },
-    {
-      id: 'alt_island_03',
-      name: '公会供票小号 B (Shelter 10)',
-      type: 'clone_user_999',
-      userId: 10,
-      doneToday: false,
-      stamina: 95,
-      maxStamina: 100,
-      boatTicketsDonated: 1,
-      goldDonatedTimes: 1,
-      currentStage: '第 18 章 · 熔岩地窟',
-      lastRunTime: '09:12:30',
-      ipResetCount: 1,
-      enabled: true,
-    },
-    {
-      id: 'alt_phone_04',
-      name: '矩阵小号 C (凭证轮换)',
-      type: 'phone_auth',
-      phone: '13800138000',
-      doneToday: false,
-      stamina: 100,
-      maxStamina: 100,
-      boatTicketsDonated: 0,
-      goldDonatedTimes: 0,
-      currentStage: '第 12 章 · 哥布林荒原',
-      lastRunTime: '昨天',
-      ipResetCount: 0,
-      enabled: true,
-    },
-  ]);
+  // 仿真域演示账号（明确隔离在 data/demoAccounts.ts，不作为设备事实源）
+  // 真机模式的账号一律读 bridge.accounts（/api/accounts），见下方 accounts 页签分支
+  const [accounts, setAccounts] = useState<AccountItem[]>(() => DEMO_ACCOUNTS.map((item) => ({ ...item })));
 
   const [activeAccountId, setActiveAccountId] = useState<string>('main_01');
 
@@ -195,16 +121,40 @@ export default function App() {
     }, 4500);
   };
 
-  const handleToggleAutoRun = () => {
+  // 真机模式下按钮状态跟随后端 automation/status，避免任务自然结束后仍显示「急停」
+  useEffect(() => {
+    if (bridge.mode !== 'real' || !bridge.automation) return;
+    const running = bridge.automation.status === 'running';
+    setIsAutoRunning((prev) => (prev === running ? prev : running));
+  }, [bridge.mode, bridge.automation?.status]);
+
+  const handleToggleAutoRun = async () => {
     const nextState = !isAutoRunning;
+    if (bridge.mode === 'real') {
+      if (nextState) {
+        addLog('FSM', 'START', '真机模式：启动 all 自动化任务（参数取自中控台配置）');
+        const result = await bridge.startAutomation('all', config);
+        if (!result) {
+          addLog('WARN', 'AUTO', '任务未启动：请确认设备会话已连接且后端就绪');
+          return;
+        }
+        setIsAutoRunning(true);
+        addLog('INFO', 'AUTO', `任务已启动：${result.task ?? 'all'} · status=${result.status}`);
+      } else {
+        const result = await bridge.stopAutomation();
+        setIsAutoRunning(false);
+        addLog('WARN', 'STOP', result ? `真机急停完成：status=${result.status}` : '急停请求失败，请检查后端');
+      }
+      return;
+    }
     setIsAutoRunning(nextState);
     if (nextState) {
-      addLog('FSM', 'START', `启动全自动流水线！正在调度账号 [${activeAccount.id}]`);
+      addLog('FSM', 'START', `启动全自动流水线！正在调度账号 [${activeAccount.id}]（仿真演示）`);
       if (fsmState === 'IDLE') {
         setFsmState('MAIN_CITY');
       }
     } else {
-      addLog('WARN', 'STOP', '人工急停中断自动化流水线');
+      addLog('WARN', 'STOP', '人工急停中断自动化流水线（仿真演示）');
     }
   };
 
@@ -445,29 +395,78 @@ export default function App() {
                   lastTap={bridge.lastTap}
                   error={bridge.error}
                   onTap={async (x, y) => {
-                    const result = await bridge.tap(x, y);
+                    const result = await bridge.tap(
+                      x,
+                      y,
+                      config.pressDurationMean,
+                      config.gaussianStdev,
+                      config.pressDurationStdev
+                    );
                     if (result) addLog('TOUCH', 'REAL', `真机点击 (${result.realX}, ${result.realY}) via ${result.injectedVia}`);
                   }}
                 />
                 <DeviceDrawer
                   packageName={bridge.defaultPackage}
+                  launcherHost={bridge.launcherHostPackage}
+                  launcherIconLabel={bridge.launcherIconLabel}
                   busy={bridge.busy}
                   users={bridge.users}
                   ocr={bridge.ocr}
                   automation={bridge.automation}
+                  accounts={bridge.accounts}
+                  automationConfig={config}
+                  setAutomationConfig={patchAutomation}
+                  onFillAccountQueue={async () => {
+                    const list = await bridge.refreshAccounts();
+                    if (list.length === 0) {
+                      addLog('WARN', 'ACCOUNT', '真机账号为空，未能填充队列（先跑一次任务或确认后端就绪）');
+                      return;
+                    }
+                    patchAutomation({ accountQueue: list.map((row) => row.name) });
+                    addLog('INFO', 'ACCOUNT', `已用 /api/accounts 的 ${list.length} 个账号覆盖队列`);
+                  }}
+                  onResetConfig={() => {
+                    resetConfig();
+                    addLog('INFO', 'CONFIG', '配置已恢复默认值并写回本地存储');
+                  }}
                   onLaunch={() => bridge.launchGame()}
                   onStop={() => bridge.stopGame()}
                   onLoadUsers={() => bridge.loadUsers()}
                   onSwitchUser={(id) => bridge.switchUser(id)}
                   onAirplane={(enable) => bridge.toggleAirplane(enable)}
-                  onOcr={() => bridge.runOcr()}
+                  onOcr={(region) => {
+                    addLog('INFO', 'OCR', region ? `区域 OCR [${region.join(', ')}]` : '全屏 OCR');
+                    void bridge.runOcr(region);
+                  }}
                   onAutomationStart={(task) => {
-                    addLog('INFO', 'AUTO', `启动自动化任务：${task}`);
-                    bridge.startAutomation(task, config.skillPriorityList);
+                    addLog('INFO', 'AUTO', `启动自动化任务：${task}（maxRuns=${config.maxRuns}, serverTo=${config.serverTo || '最新区'}）`);
+                    void bridge.startAutomation(task, config);
                   }}
                   onAutomationStop={() => bridge.stopAutomation()}
-                  onVerify={() => { addLog('INFO', 'VERIFY', '请在终端执行 npm run verify'); }}
-                  verifyResult={null}
+                  onVerify={() => {
+                    addLog('INFO', 'VERIFY', '触发 V1–V10 真机验收');
+                    void bridge.runVerify().then((result) => {
+                      if (result) {
+                        addLog(
+                          'INFO',
+                          'VERIFY',
+                          `验收完成：PASS ${result.summary.passed} / FAIL ${result.summary.failed} / SKIP ${result.summary.skipped}`
+                        );
+                      }
+                    });
+                  }}
+                  onSwipe={(direction) => {
+                    addLog('TOUCH', 'SWIPE', `真机滑动：${direction}`);
+                    void bridge.swipe(direction);
+                  }}
+                  onKey={(key) => {
+                    addLog('TOUCH', 'KEY', `真机按键：${key}`);
+                    void bridge.pressKey(key);
+                  }}
+                  onCurrentApp={() => { void bridge.refreshCurrentApp(); }}
+                  currentAppInfo={bridge.currentApp}
+                  verifyBusy={bridge.verifyBusy}
+                  verifyResult={bridge.verifyResult}
                 />
               </div>
             ) : (
@@ -477,7 +476,15 @@ export default function App() {
                 activeAccount={activeAccount}
                 config={config}
                 onLog={addLog}
-                onRecordTouch={() => {}}
+                onRecordTouch={(record: TouchEventRecord) => {
+                  const dx = record.realX - record.targetX;
+                  const dy = record.realY - record.targetY;
+                  addLog(
+                    'TOUCH',
+                    'SAMPLE',
+                    `归档触控样本 ${record.id.slice(-4)}：偏差 Δ${dx.toFixed(1)}/${dy.toFixed(1)}px · 按压 ${record.pressTime.toFixed(0)}ms · σ=${record.stdev}`
+                  );
+                }}
                 isAutoRunning={isAutoRunning}
                 onToggleAutoRun={handleToggleAutoRun}
               />
@@ -487,38 +494,48 @@ export default function App() {
 
         {/* Tab 2: Accounts Management Matrix */}
         {activeTab === 'accounts' && (
-          <AccountMatrix
-            accounts={accounts}
-            activeAccountId={activeAccountId}
-            onSelectAccount={(acc) => {
-              setActiveAccountId(acc.id);
-              addLog('INFO', 'DISPATCH', `将模拟器当前调度账号切换至 [${acc.id}] (${acc.name})`);
-            }}
-            onToggleAccountDone={(id) => {
-              setAccounts((prev) =>
-                prev.map((a) => (a.id === id ? { ...a, doneToday: !a.doneToday } : a))
-              );
-              addLog('INFO', 'ACCOUNT', `更新账号 [${id}] 今日完成标记`);
-            }}
-            onAddAccount={(newAcc) => {
-              const item: AccountItem = {
-                ...newAcc,
-                id: `alt_${Date.now().toString().slice(-4)}`,
-                boatTicketsDonated: 0,
-                goldDonatedTimes: 0,
-                currentStage: '第 1 章 · 启程初原',
-                ipResetCount: 0,
-              };
-              setAccounts((prev) => [...prev, item]);
-              addLog('INFO', 'ACCOUNT', `新增小号 [${item.id}] 进入矩阵调度池`);
-            }}
-            onResetAllDaily={() => {
-              setAccounts((prev) => prev.map((a) => ({ ...a, doneToday: false })));
-              addLog('INFO', 'ACCOUNT', '已重置矩阵所有账号的今日已完成标记');
-            }}
-            onSimulateIpReset={handleSimulateIpReset}
-            isResettingIp={isResettingIp}
-          />
+          bridge.mode === 'real' ? (
+            <RealAccountMatrix
+              accounts={bridge.accounts}
+              busy={bridge.busy}
+              onRefresh={() => { void bridge.refreshAccounts(); }}
+            />
+          ) : (
+            <AccountMatrix
+              accounts={accounts}
+              activeAccountId={activeAccountId}
+              demo
+              onSwitchToReal={() => { void bridge.switchMode('real'); }}
+              onSelectAccount={(acc) => {
+                setActiveAccountId(acc.id);
+                addLog('INFO', 'DISPATCH', `将仿真调度账号切换至 [${acc.id}] (${acc.name})`);
+              }}
+              onToggleAccountDone={(id) => {
+                setAccounts((prev) =>
+                  prev.map((a) => (a.id === id ? { ...a, doneToday: !a.doneToday } : a))
+                );
+                addLog('INFO', 'ACCOUNT', `更新演示账号 [${id}] 今日完成标记`);
+              }}
+              onAddAccount={(newAcc) => {
+                const item: AccountItem = {
+                  ...newAcc,
+                  id: `alt_${Date.now().toString().slice(-4)}`,
+                  boatTicketsDonated: 0,
+                  goldDonatedTimes: 0,
+                  currentStage: '第 1 章 · 启程初原',
+                  ipResetCount: 0,
+                };
+                setAccounts((prev) => [...prev, item]);
+                addLog('INFO', 'ACCOUNT', `新增演示小号 [${item.id}] 进入仿真调度池`);
+              }}
+              onResetAllDaily={() => {
+                setAccounts((prev) => prev.map((a) => ({ ...a, doneToday: false })));
+                addLog('INFO', 'ACCOUNT', '已重置仿真账号的今日已完成标记');
+              }}
+              onSimulateIpReset={handleSimulateIpReset}
+              isResettingIp={isResettingIp}
+            />
+          )
         )}
 
         {/* Tab 3: Visual Decision & Skill Priority Studio */}

@@ -73,13 +73,94 @@ export interface AutomationLogPayload {
   message: string;
 }
 
+export type AutomationTask =
+  | 'growth'
+  | 'daily'
+  | 'guild'
+  | 'ship'
+  | 'bootstrap'
+  | 'server_sweep'
+  | 'account_sweep'
+  | 'all';
+
 export interface AutomationPayload {
   status: 'idle' | 'running' | 'completed' | 'stopped' | 'error';
-  task: 'daily' | 'stage' | 'all' | null;
+  task: AutomationTask | null;
   sessionId: string | null;
   startedAt: number | null;
   endedAt: number | null;
   error: string | null;
-  progress: { runs: number; dailySteps: number };
+  progress: {
+    stageRuns: number;
+    towerFloors: number;
+    dailySteps: number;
+    guildSteps: number;
+    shipSteps: number;
+    guildRaids?: number;
+    dungeonSweeps?: number;
+    phase?: string;
+    stageFails?: number;
+    stageFailStreak?: number;
+    dungeonsDone?: number;
+    travelSpent?: number;
+    // AutoX 端侧开始游历前 OCR 确认的体力证据
+    staminaBefore?: number;
+    upgradeSteps?: number;
+    accountsCreated?: number;
+    serversDone?: number;
+    power?: number;
+    stamina?: number;
+  };
   logs: AutomationLogPayload[];
+}
+
+export interface CurrentAppPayload {
+  package: string;
+  activity: string | null;
+  running: boolean;
+  pid: number | null;
+}
+
+export interface VerifyCheckPayload {
+  checkId: string;
+  status: 'PASS' | 'FAIL' | 'SKIP';
+  detail: string;
+  elapsedMs: number;
+}
+
+export interface VerifyPayload {
+  serial: string;
+  started: string;
+  deviceOnline: boolean;
+  summary: { passed: number; failed: number; skipped: number; ok: boolean };
+  checks: VerifyCheckPayload[];
+  hint: string | null;
+}
+
+export type SwipeDirection = 'up' | 'down' | 'left' | 'right';
+
+export interface AccountWorkRecord {
+  label: string;
+  done: boolean;
+  count: number;
+  doneAt: number | null;
+}
+
+export interface AccountRunRecord {
+  runId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+  currentPhase: string;
+  error: string;
+  startedAt: number;
+  updatedAt: number;
+  progress: AutomationPayload['progress'];
+}
+
+export interface AccountRecord {
+  name: string;
+  power: number;
+  stamina: number;
+  updatedAt: number | null;
+  lastRun: AccountRunRecord | null;
+  works: Record<'daily' | 'guild' | 'ship' | 'stage', AccountWorkRecord>;
 }

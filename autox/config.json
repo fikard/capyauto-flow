@@ -1,0 +1,21 @@
+{
+  "account": "风贰",
+  "backendUrl": "",
+  "dryRun": true,
+  "ocr": {
+    "pollIntervalMs": 800
+  },
+  "loop": {
+    "maxTierSteps": 4,
+    "settlementPolls": 60,
+    "maxStaminaPolls": 3
+  },
+  "stamina": {
+    "minRequired": 100
+  },
+  "multiplierPlus": {
+    "normalized": [0.725, 0.835],
+    "ocrAnchors": ["+", "＋", "加"],
+    "requireOcrAnchor": false
+  }
+}

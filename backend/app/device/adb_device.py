@@ -14,6 +14,7 @@ from app.core.dither import bezier_points, gaussian_click
 from app.core.geometry import normalize_to_device
 from app.device import packages
 from app.device.adb import AdbRunner
+from app.device.packages import LauncherSpec
 from app.device.base import (
     AirplaneResult,
     AppStatus,
@@ -83,6 +84,7 @@ class AdbScrcpyDevice(DeviceAdapter):
         frame_timeout: float,
         allow_fallback: bool,
         game_package: str = "",
+        launcher: LauncherSpec | None = None,
     ) -> None:
         self._adb = adb
         self._server_bin = server_bin
@@ -96,6 +98,7 @@ class AdbScrcpyDevice(DeviceAdapter):
         self._frame_timeout = frame_timeout
         self._allow_fallback = allow_fallback
         self.game_package = game_package
+        self.launcher = launcher
         self._sessions: dict[str, MirrorSession] = {}
         self._scrcpy: dict[str, ScrcpySession] = {}
         self._pollers: dict[str, ScreencapPoller] = {}
@@ -457,7 +460,25 @@ class AdbScrcpyDevice(DeviceAdapter):
 
     def _launch_sync(self, session_id: str, package: str, user: int | None) -> AppStatus:
         session = self.get_session(session_id)
-        activity, pid = packages.launch_app(self._adb, session.serial, package, user=user)
+        activity, pid = packages.launch_app(
+            self._adb, session.serial, package, user=user, launcher=self.launcher
+        )
+        # 经「冲鸭变速器」桌面快捷方式启动时，真实前台是宿主沙箱 Activity。
+        # 若仍把请求里的游戏包名回显成运行态，Web 会显示 com.hb.cncapy.and，
+        # 与 /api/app/current 给出的 com.joke.chongya/...STUB1 自相矛盾。
+        if self.launcher is not None and packages.should_use_launcher(
+            self._adb, session.serial, self.launcher
+        ):
+            component = packages.current_component(self._adb, session.serial)
+            if component is not None and component[0] == self.launcher.host_package:
+                host_pid = packages.pid_of(self._adb, session.serial, component[0]) or pid
+                return AppStatus(
+                    package=component[0],
+                    activity=component[1],
+                    running=host_pid is not None,
+                    pid=host_pid,
+                    user=user,
+                )
         return AppStatus(
             package=package, activity=activity, running=pid is not None, pid=pid, user=user
         )
@@ -469,7 +490,12 @@ class AdbScrcpyDevice(DeviceAdapter):
 
     def _stop_sync(self, session_id: str, package: str) -> None:
         session = self.get_session(session_id)
-        packages.stop_app(self._adb, session.serial, package)
+        packages.stop_app(
+            self._adb,
+            session.serial,
+            package,
+            host_package=self.launcher.host_package if self.launcher else None,
+        )
 
     async def stop_app(self, session_id: str, package: str) -> None:
         await asyncio.to_thread(self._stop_sync, session_id, package)

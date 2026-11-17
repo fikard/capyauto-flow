@@ -1,7 +1,9 @@
 from dataclasses import FrozenInstanceError
+import socket
 
 import pytest
 
+from app.__main__ import port_busy
 from app.config import Settings
 
 
@@ -95,3 +97,18 @@ def test_settings_is_frozen():
     cfg = Settings()
     with pytest.raises(FrozenInstanceError):
         setattr(cfg, "backend_port", 1234)
+
+
+def test_port_busy_allows_rebinding_after_time_wait():
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    connection, _ = listener.accept()
+    connection.close()
+    client.close()
+    listener.close()
+
+    assert port_busy(port) is False

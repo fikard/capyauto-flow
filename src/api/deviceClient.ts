@@ -1,12 +1,16 @@
 import type {
+  AccountRecord,
   AutomationPayload,
+  AutomationTask,
   DeviceInfoPayload,
   HealthPayload,
   OcrPayload,
   SessionPayload,
   TapPayload,
   UsersPayload,
+  VerifyPayload,
 } from '../types/device';
+import type { OcrRegion } from '../types/pipeline';
 
 const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
 export const BACKEND_URL = env?.VITE_BACKEND_URL ?? 'http://127.0.0.1:8084';
@@ -65,10 +69,17 @@ export const deviceClient = {
     }),
   closeSession: (sessionId: string) =>
     request<{ ok: boolean }>(`/api/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
-  tap: (sessionId: string, x: number, y: number, pressMs = 80, sigma = 6) =>
+  tap: (
+    sessionId: string,
+    x: number,
+    y: number,
+    pressMs = 80,
+    sigma = 6,
+    pressStdev = 20
+  ) =>
     request<TapPayload>('/api/control/tap', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, x, y, pressMs, sigma }),
+      body: JSON.stringify({ sessionId, x, y, pressMs, sigma, pressStdev }),
     }),
   swipe: (sessionId: string, x1: number, y1: number, x2: number, y2: number, durationMs = 300) =>
     request<{ points: [number, number][]; injectedVia: string }>('/api/control/swipe', {
@@ -81,7 +92,14 @@ export const deviceClient = {
       body: JSON.stringify({ sessionId, key }),
     }),
   launchApp: (sessionId: string, packageName: string, user?: number) =>
-    request<{ ok: boolean; usedUser: number | null; package: string; activity: string | null }>(
+    request<{
+      ok: boolean;
+      usedUser: number | null;
+      package: string;
+      activity: string | null;
+      running: boolean;
+      pid: number | null;
+    }>(
       '/api/app/launch',
       { method: 'POST', body: JSON.stringify({ sessionId, package: packageName, user }) }
     ),
@@ -106,21 +124,69 @@ export const deviceClient = {
       method: 'POST',
       body: JSON.stringify({ sessionId, enable }),
     }),
-  ocr: (sessionId: string) =>
+  ocr: (sessionId: string, region: OcrRegion | null = null) =>
     request<OcrPayload>('/api/vision/ocr', {
       method: 'POST',
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify({ sessionId, region: region ?? undefined }),
     }),
   automationStatus: () => request<AutomationPayload>('/api/automation/status'),
   automationStart: (
     sessionId: string,
-    task: 'daily' | 'stage' | 'all',
-    maxRuns = 1,
-    skillPriorityList: string[] = []
+    task: AutomationTask,
+    maxRuns = 0,
+    skillPriorityList: string[] = [],
+    speed = 1.0,
+    towerFloors = 2,
+    {
+      maxStageFails,
+      travelStamina,
+      allowGemTalentBreakthrough,
+      stageMode,
+      fastStageCheckEvery,
+      account,
+      accounts,
+      serverFrom,
+      serverTo,
+      serverDryRun,
+    }: {
+      maxStageFails?: number;
+      travelStamina?: number;
+      allowGemTalentBreakthrough?: boolean;
+      stageMode?: 'full' | 'lean';
+      fastStageCheckEvery?: number;
+      account?: string;
+      accounts?: string[];
+      serverFrom?: string;
+      serverTo?: string;
+      serverDryRun?: boolean;
+    } = {}
   ) =>
     request<AutomationPayload>('/api/automation/start', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, task, maxRuns, skillPriorityList }),
+      body: JSON.stringify({
+        sessionId,
+        task,
+        maxRuns,
+        skillPriorityList,
+        speed,
+        towerFloors,
+        maxStageFails,
+        travelStamina,
+        allowGemTalentBreakthrough,
+        stageMode,
+        fastStageCheckEvery,
+        account,
+        accounts,
+        serverFrom,
+        serverTo,
+        serverDryRun,
+      }),
     }),
   automationStop: () => request<AutomationPayload>('/api/automation/stop', { method: 'POST' }),
+  accounts: () => request<{ accounts: AccountRecord[] }>('/api/accounts'),
+  verifyRun: (skip: string[] = [], serial = '') =>
+    request<VerifyPayload>('/api/verify/run', {
+      method: 'POST',
+      body: JSON.stringify({ serial, skip }),
+    }),
 };
